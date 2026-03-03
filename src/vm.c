@@ -1197,9 +1197,7 @@ RValue VM_executeCode(VMContext* ctx, int32_t codeIndex) {
     ctx->localVarCount = 0;
 
     // Free local array map
-    for (ptrdiff_t i = 0; hmlen(ctx->localArrayMap) > i; i++) {
-        RValue_free(&ctx->localArrayMap[i].value);
-    }
+    RValue_freeAllRValuesInMap(ctx->localArrayMap);
     hmfree(ctx->localArrayMap);
     ctx->localArrayMap = nullptr;
 
@@ -1297,9 +1295,7 @@ RValue VM_callCodeIndex(VMContext* ctx, int32_t codeIndex, RValue* args, int32_t
     free(ctx->localVars);
 
     // Free callee local array map
-    for (ptrdiff_t i = 0; hmlen(ctx->localArrayMap) > i; i++) {
-        RValue_free(&ctx->localArrayMap[i].value);
-    }
+    RValue_freeAllRValuesInMap(ctx->localArrayMap);
     hmfree(ctx->localArrayMap);
 
     ctx->localVars = saved->savedLocals;
@@ -1333,13 +1329,10 @@ void VM_free(VMContext* ctx) {
     }
 
     // Free array maps
-    for (ptrdiff_t i = 0; hmlen(ctx->globalArrayMap) > i; i++) {
-        RValue_free(&ctx->globalArrayMap[i].value);
-    }
+    RValue_freeAllRValuesInMap(ctx->globalArrayMap);
     hmfree(ctx->globalArrayMap);
-    for (ptrdiff_t i = 0; hmlen(ctx->localArrayMap) > i; i++) {
-        RValue_free(&ctx->localArrayMap[i].value);
-    }
+
+    RValue_freeAllRValuesInMap(ctx->localArrayMap);
     hmfree(ctx->localArrayMap);
 
     // Free hash maps

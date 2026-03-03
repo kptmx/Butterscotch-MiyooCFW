@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "stb_ds.h"
+#include "utils.h"
+
 // ===[ RValue - Tagged Union ]===
 typedef enum {
     RVALUE_REAL = 0,
@@ -134,3 +137,9 @@ typedef struct {
     int64_t key;
     RValue value;
 } ArrayMapEntry;
+
+static void RValue_freeAllRValuesInMap(ArrayMapEntry* map) {
+    repeat(hmlen(map), i) {
+        RValue_free(&map[i].value);
+    }
+}

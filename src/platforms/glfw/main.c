@@ -138,19 +138,21 @@ int main(int argc, char* argv[]) {
 
     if (args.printRooms) {
         forEachIndexed(Room, room, idx, dataWin->room.rooms, dataWin->room.count) {
-            printf("[%d] %s\n", idx, room->name);
+            printf("[%d] %s ()\n", idx, room->name);
 
             forEachIndexed(RoomGameObject, roomGameObject, idx2, room->gameObjects, room->gameObjectCount) {
                 GameObject* gameObject = &dataWin->objt.objects[roomGameObject->objectDefinition];
                 printf(
-                    "  [%d] %s (x=%d,y=%d,persistent=%d,solid=%d,spriteId=%d)\n",
+                    "  [%d] %s (x=%d,y=%d,persistent=%d,solid=%d,spriteId=%d,preCreateCode=%d,creationCode=%d)\n",
                     idx2,
                     gameObject->name,
                     roomGameObject->x,
                     roomGameObject->y,
                     gameObject->persistent,
                     gameObject->solid,
-                    gameObject->spriteId
+                    gameObject->spriteId,
+                    roomGameObject->preCreateCode,
+                    roomGameObject->creationCode
                 );
             }
         }

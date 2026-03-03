@@ -54,13 +54,12 @@ static void restoreVMInstanceContext(VMContext* vm, RValue* savedSelfVars, uint3
     vm->currentInstance = savedInstance;
 }
 
-void Runner_executeEvent(Runner* runner, Instance* instance, int32_t eventType, int32_t eventSubtype) {
-    int32_t codeId = findEventCodeId(runner->dataWin, instance->objectIndex, eventType, eventSubtype);
+static void executeCode(Runner* runner, Instance* instance, int32_t codeId) {
+    // GameMaker does use codeIds less than 0, we'll just pretend we didn't hear them...
     if (0 > codeId) return;
 
-    VMContext* vm = runner->vmContext;
-
     // Save VM context
+    VMContext* vm = runner->vmContext;
     RValue* savedSelfVars = vm->selfVars;
     uint32_t savedSelfVarCount = vm->selfVarCount;
     Instance* savedInstance = (Instance*) vm->currentInstance;
@@ -76,6 +75,12 @@ void Runner_executeEvent(Runner* runner, Instance* instance, int32_t eventType, 
     restoreVMInstanceContext(vm, savedSelfVars, savedSelfVarCount, savedInstance);
 }
 
+void Runner_executeEvent(Runner* runner, Instance* instance, int32_t eventType, int32_t eventSubtype) {
+    int32_t codeId = findEventCodeId(runner->dataWin, instance->objectIndex, eventType, eventSubtype);
+
+    executeCode(runner, instance, codeId);
+}
+
 void Runner_executeEventForAll(Runner* runner, int32_t eventType, int32_t eventSubtype) {
     // Iterate over a snapshot of the current instance count to avoid issues if instances are added
     int32_t count = (int32_t) arrlen(runner->instances);
@@ -88,23 +93,6 @@ void Runner_executeEventForAll(Runner* runner, int32_t eventType, int32_t eventS
 }
 
 // ===[ Room Management ]===
-
-static void executeCodeIfValid(Runner* runner, Instance* instance, int32_t codeId) {
-    if (0 > codeId) return;
-    if ((uint32_t) codeId >= runner->dataWin->code.count) return;
-
-    VMContext* vm = runner->vmContext;
-    RValue* savedSelfVars = vm->selfVars;
-    uint32_t savedSelfVarCount = vm->selfVarCount;
-    Instance* savedInstance = (Instance*) vm->currentInstance;
-
-    setVMInstanceContext(vm, instance);
-
-    RValue result = VM_executeCode(vm, codeId);
-    RValue_free(&result);
-
-    restoreVMInstanceContext(vm, savedSelfVars, savedSelfVarCount, savedInstance);
-}
 
 static void initRoom(Runner* runner, int32_t roomIndex) {
     DataWin* dataWin = runner->dataWin;
@@ -180,13 +168,13 @@ static void initRoom(Runner* runner, int32_t roomIndex) {
         arrput(runner->instances, inst);
 
         // Run PreCreate code
-        executeCodeIfValid(runner, inst, roomObj->preCreateCode);
+        executeCode(runner, inst, roomObj->preCreateCode);
 
         // Run Create event
         Runner_executeEvent(runner, inst, EVENT_CREATE, 0);
 
         // Run instance creation code
-        executeCodeIfValid(runner, inst, roomObj->creationCode);
+        executeCode(runner, inst, roomObj->creationCode);
     }
 
     // Run room creation code

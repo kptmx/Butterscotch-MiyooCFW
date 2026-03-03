@@ -14,6 +14,7 @@ typedef struct {
     BuiltinFunc value;
 } BuiltinEntry;
 
+static bool initialized = false;
 static BuiltinEntry* builtinMap = nullptr;
 
 static void registerBuiltin(const char* name, BuiltinFunc func) {
@@ -271,6 +272,9 @@ static RValue builtinIsUndefined(VMContext* ctx, RValue* args, int32_t argCount)
 // ===[ REGISTRATION ]===
 
 void VMBuiltins_registerAll(void) {
+    requireMessage(!initialized, "Attempting to register all VMBuiltins, but it was already registered!");
+    initialized = true;
+    
     registerBuiltin("show_debug_message", builtinShowDebugMessage);
     registerBuiltin("string_length", builtinStringLength);
     registerBuiltin("real", builtinReal);

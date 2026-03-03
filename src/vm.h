@@ -127,8 +127,8 @@ typedef struct VMContext {
     StringBooleanEntry* loggedUnknownFuncs;
     // "codeName\tfuncName" -> true, for deduplicating stubbed function warnings
     StringBooleanEntry* loggedStubbedFuncs;
-    StringBooleanEntry* watchedGlobalVars;
-    StringBooleanEntry* watchedInstanceVars;
+    StringBooleanEntry* globalVarsToBeTraced;
+    StringBooleanEntry* instaceVarsToBeTraced;
     // Resolved reference maps: absolute file offset of operand -> resolved value
     // varRefMap value = upper 5 bits (varType) | varIndex in lower 27 bits
     // funcRefMap value = funcIndex

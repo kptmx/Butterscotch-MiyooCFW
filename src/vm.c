@@ -336,20 +336,20 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
             break;
         case INSTANCE_GLOBAL:
             require(ctx->globalVarCount > (uint32_t) varDef->varID);
-            shouldLogGlobal = shgeti(ctx->watchedGlobalVars, varDef->name) != -1 || shgeti(ctx->watchedGlobalVars, "*") != -1;
+            shouldLogGlobal = shgeti(ctx->globalVarsToBeTraced, varDef->name) != -1 || shgeti(ctx->globalVarsToBeTraced, "*") != -1;
             dest = &ctx->globalVars[varDef->varID];
             break;
         case INSTANCE_SELF:
         default:
             // INSTANCE_SELF or positive instanceType (object index)
             require(ctx->selfVarCount > (uint32_t) varDef->varID);
-            if (shlen(ctx->watchedInstanceVars) != 0) {
+            if (shlen(ctx->instaceVarsToBeTraced) != 0) {
                 GameObject* obj = &ctx->dataWin->objt.objects[ctx->currentInstance->objectIndex];
 
                 char objNameWithVariableName[strlen(obj->name) + 1 + strlen(varDef->name) + 1];
                 snprintf(objNameWithVariableName, sizeof(objNameWithVariableName), "%s.%s", obj->name, varDef->name);
 
-                shouldLogInstance = shgeti(ctx->watchedInstanceVars, obj->name) != -1 || shgeti(ctx->watchedInstanceVars, objNameWithVariableName) != -1 || shgeti(ctx->watchedInstanceVars, "*") != -1;
+                shouldLogInstance = shgeti(ctx->instaceVarsToBeTraced, obj->name) != -1 || shgeti(ctx->instaceVarsToBeTraced, objNameWithVariableName) != -1 || shgeti(ctx->instaceVarsToBeTraced, "*") != -1;
             }
             dest = &ctx->selfVars[varDef->varID];
             break;
@@ -1309,8 +1309,8 @@ void VM_free(VMContext* ctx) {
     shfree(ctx->globalVarNameMap);
     shfree(ctx->loggedUnknownFuncs);
     shfree(ctx->loggedStubbedFuncs);
-    shfree(ctx->watchedGlobalVars);
-    shfree(ctx->watchedInstanceVars);
+    shfree(ctx->globalVarsToBeTraced);
+    shfree(ctx->instaceVarsToBeTraced);
     hmfree(ctx->varRefMap);
     hmfree(ctx->funcRefMap);
 

@@ -966,7 +966,7 @@ static void handleCall(VMContext* ctx, uint32_t instr, const uint8_t* extraData)
 
         if (0 > shgeti(ctx->loggedUnknownFuncs, dedupKey)) {
             shput(ctx->loggedUnknownFuncs, dedupKey, true);
-            fprintf(stderr, "VM: Unknown function \"%s\" called from \"%s\"!\n", funcName, callerName);
+            fprintf(stderr, "VM: [%s] Unknown function \"%s\"!\n", callerName, funcName);
         } else {
             free(dedupKey);
         }

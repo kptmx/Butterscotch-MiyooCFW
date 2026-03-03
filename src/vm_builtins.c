@@ -41,7 +41,7 @@ static void logStubbedFunction(VMContext* ctx, const char* funcName) {
     if (0 > shgeti(ctx->loggedStubbedFuncs, dedupKey)) {
         // shput stores the key pointer, so don't free it when inserting
         shput(ctx->loggedStubbedFuncs, dedupKey, true);
-        fprintf(stderr, "VM: Stubbed function '%s' called from '%s'!\n", funcName, callerName);
+        fprintf(stderr, "VM: [%s] Stubbed function \"%s\"!\n", callerName, funcName);
     } else {
         free(dedupKey);
     }

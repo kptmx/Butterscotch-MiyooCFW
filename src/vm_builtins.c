@@ -10,7 +10,7 @@
 #include <time.h>
 
 #include "stb_ds.h"
-#include "utils.h"
+#include "text_utils.h"
 
 // ===[ BUILTIN FUNCTION REGISTRY ]===
 typedef struct {
@@ -1646,9 +1646,66 @@ STUB_RETURN_ZERO(sprite_get_number)
 STUB_RETURN_ZERO(sprite_get_xoffset)
 STUB_RETURN_ZERO(sprite_get_yoffset)
 
-// Font/text stubs
-STUB_RETURN_ZERO(string_width)
-STUB_RETURN_ZERO(string_height)
+// Font/text measurement
+static RValue builtin_stringWidth(VMContext* ctx, RValue* args, int32_t argCount) {
+    if (1 > argCount) return RValue_makeReal(0.0);
+    Runner* runner = (Runner*) ctx->runner;
+    if (runner == nullptr || runner->renderer == nullptr) return RValue_makeReal(0.0);
+
+    Renderer* renderer = runner->renderer;
+    int32_t fontIndex = renderer->drawFont;
+    if (0 > fontIndex || renderer->dataWin->font.count <= (uint32_t) fontIndex) return RValue_makeReal(0.0);
+
+    Font* font = &renderer->dataWin->font.fonts[fontIndex];
+    const char* str = RValue_toString(args[0]);
+
+    char* processed = TextUtils_preprocessGmlText(str);
+    int32_t textLen = (int32_t) strlen(processed);
+
+    // Find the widest line
+    float maxWidth = 0;
+    int32_t lineStart = 0;
+    while (textLen >= lineStart) {
+        int32_t lineEnd = lineStart;
+        while (textLen > lineEnd && !TextUtils_isNewlineChar(processed[lineEnd])) {
+            lineEnd++;
+        }
+        int32_t lineLen = lineEnd - lineStart;
+
+        float lineWidth = TextUtils_measureLineWidth(font, processed + lineStart, lineLen);
+        if (lineWidth > maxWidth) maxWidth = lineWidth;
+
+        if (textLen > lineEnd) {
+            lineStart = TextUtils_skipNewline(processed, lineEnd, textLen);
+        } else {
+            break;
+        }
+    }
+
+    free(processed);
+    return RValue_makeReal((double) (maxWidth * font->scaleX));
+}
+
+static RValue builtin_stringHeight(VMContext* ctx, RValue* args, int32_t argCount) {
+    if (1 > argCount) return RValue_makeReal(0.0);
+    Runner* runner = (Runner*) ctx->runner;
+    if (runner == nullptr || runner->renderer == nullptr) return RValue_makeReal(0.0);
+
+    Renderer* renderer = runner->renderer;
+    int32_t fontIndex = renderer->drawFont;
+    if (0 > fontIndex || renderer->dataWin->font.count <= (uint32_t) fontIndex) return RValue_makeReal(0.0);
+
+    Font* font = &renderer->dataWin->font.fonts[fontIndex];
+    const char* str = RValue_toString(args[0]);
+
+    char* processed = TextUtils_preprocessGmlText(str);
+    int32_t textLen = (int32_t) strlen(processed);
+    int32_t lineCount = TextUtils_countLines(processed, textLen);
+    free(processed);
+
+    return RValue_makeReal((double) ((float) lineCount * (float) font->emSize * font->scaleY));
+}
+
 STUB_RETURN_ZERO(string_width_ext)
 STUB_RETURN_ZERO(string_height_ext)
 
@@ -1939,8 +1996,8 @@ void VMBuiltins_registerAll(void) {
     registerBuiltin("sprite_get_yoffset", builtin_sprite_get_yoffset);
 
     // Text measurement
-    registerBuiltin("string_width", builtin_string_width);
-    registerBuiltin("string_height", builtin_string_height);
+    registerBuiltin("string_width", builtin_stringWidth);
+    registerBuiltin("string_height", builtin_stringHeight);
     registerBuiltin("string_width_ext", builtin_string_width_ext);
     registerBuiltin("string_height_ext", builtin_string_height_ext);
 

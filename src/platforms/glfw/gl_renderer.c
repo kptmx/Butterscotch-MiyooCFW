@@ -1,6 +1,6 @@
 #include "gl_renderer.h"
 #include "../../matrix_math.h"
-#include "../../utils.h"
+#include "../../text_utils.h"
 
 #include <glad/glad.h>
 #include <stdio.h>
@@ -485,128 +485,6 @@ static void glDrawRectangle(Renderer* renderer, float x1, float y1, float x2, fl
 
 // ===[ Text Drawing ]===
 
-static FontGlyph* findGlyph(Font* font, uint16_t ch) {
-    repeat(font->glyphCount, i) {
-        if (font->glyphs[i].character == ch) return &font->glyphs[i];
-    }
-    return nullptr;
-}
-
-static float getKerningOffset(FontGlyph* glyph, uint16_t nextCh) {
-    repeat(glyph->kerningCount, k) {
-        if (glyph->kerning[k].character == (int16_t) nextCh) {
-            return glyph->kerning[k].shiftModifier;
-        }
-    }
-    return 0;
-}
-
-// Decodes a single UTF-8 codepoint from str at *pos, advances *pos past the consumed bytes.
-// Returns the codepoint as uint16_t (sufficient for BMP glyphs). Returns 0xFFFD for invalid sequences.
-static uint16_t decodeUtf8(const char* str, int32_t len, int32_t* pos) {
-    uint8_t b = (uint8_t) str[*pos];
-    if (128 > b) {
-        // ASCII (0xxxxxxx)
-        (*pos)++;
-        return b;
-    } else if ((b & 0xE0) == 0xC0) {
-        // 2-byte sequence (110xxxxx 10xxxxxx)
-        if (len > *pos + 1 && ((uint8_t) str[*pos + 1] & 0xC0) == 0x80) {
-            uint16_t cp = ((b & 0x1F) << 6) | ((uint8_t) str[*pos + 1] & 0x3F);
-            *pos += 2;
-            return cp;
-        }
-    } else if ((b & 0xF0) == 0xE0) {
-        // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
-        if (len > *pos + 2 && ((uint8_t) str[*pos + 1] & 0xC0) == 0x80 && ((uint8_t) str[*pos + 2] & 0xC0) == 0x80) {
-            uint16_t cp = ((b & 0x0F) << 12) | (((uint8_t) str[*pos + 1] & 0x3F) << 6) | ((uint8_t) str[*pos + 2] & 0x3F);
-            *pos += 3;
-            return cp;
-        }
-    } else if ((b & 0xF8) == 0xF0) {
-        // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx) - truncated to uint16_t
-        if (len > *pos + 3 && ((uint8_t) str[*pos + 1] & 0xC0) == 0x80 && ((uint8_t) str[*pos + 2] & 0xC0) == 0x80 && ((uint8_t) str[*pos + 3] & 0xC0) == 0x80) {
-            *pos += 4;
-            return 0xFFFD; // Beyond BMP, return replacement character
-        }
-    }
-    // Invalid or truncated sequence
-    (*pos)++;
-    return 0xFFFD;
-}
-
-static float measureLineWidth(Font* font, const char* line, int32_t len) {
-    float width = 0;
-    int32_t pos = 0;
-    while (len > pos) {
-        uint16_t ch = decodeUtf8(line, len, &pos);
-        FontGlyph* glyph = findGlyph(font, ch);
-        if (glyph == nullptr) continue;
-
-        width += glyph->shift;
-
-        if (len > pos) {
-            int32_t savedPos = pos;
-            uint16_t nextCh = decodeUtf8(line, len, &pos);
-            pos = savedPos;
-            width += getKerningOffset(glyph, nextCh);
-        }
-    }
-    return width;
-}
-
-// Preprocesses GML text: converts unescaped # to \n, and \# to literal #.
-// Returns a heap-allocated string that must be freed by the caller.
-static char* preprocessGmlText(const char* text) {
-    int32_t len = (int32_t) strlen(text);
-    char* result = malloc(len + 1);
-    int32_t out = 0;
-
-    repeat(len, i) {
-        if (text[i] == '#') {
-            if (out > 0 && result[out - 1] == '\\') {
-                // \# -> replace the already-written backslash with literal #
-                result[out - 1] = '#';
-            } else {
-                result[out++] = '\n';
-            }
-        } else {
-            result[out++] = text[i];
-        }
-    }
-    result[out] = '\0';
-    return result;
-}
-
-// Returns true if c is \r or \n
-static bool isNewlineChar(char c) {
-    return c == '\n' || c == '\r';
-}
-
-// Counts the number of lines in preprocessed text, treating \r\n and \n\r as single breaks
-static int32_t countLines(const char* text, int32_t len) {
-    int32_t count = 1;
-    for (int32_t i = 0; len > i; i++) {
-        if (isNewlineChar(text[i])) {
-            count++;
-            // Treat \r\n or \n\r as a single line break
-            if (len > i + 1 && isNewlineChar(text[i + 1]) && text[i] != text[i + 1]) {
-                i++;
-            }
-        }
-    }
-    return count;
-}
-
-// Advances lineStart past the newline at lineEnd, treating \r\n and \n\r as single breaks
-static int32_t skipNewline(const char* text, int32_t lineEnd, int32_t textLen) {
-    int32_t next = lineEnd + 1;
-    if (textLen > next && isNewlineChar(text[next]) && text[lineEnd] != text[next]) {
-        next++;
-    }
-    return next;
-}
-
 static void glDrawText(Renderer* renderer, const char* text, float x, float y, float xscale, float yscale, float angleDeg) {
     GLRenderer* gl = (GLRenderer*) renderer;
     DataWin* dw = renderer->dataWin;
@@ -636,11 +514,11 @@ static void glDrawText(Renderer* renderer, const char* text, float x, float y, f
     float b = (float) BGR_B(color) / 255.0f;
 
     // Preprocess: convert # to \n (and \# to literal #)
-    char* processed = preprocessGmlText(text);
+    char* processed = TextUtils_preprocessGmlText(text);
     int32_t textLen = (int32_t) strlen(processed);
 
     // Count lines, treating \r\n and \n\r as single breaks
-    int32_t lineCount = countLines(processed, textLen);
+    int32_t lineCount = TextUtils_countLines(processed, textLen);
 
     // Vertical alignment offset
     float totalHeight = (float) lineCount * (float) font->emSize;
@@ -660,13 +538,13 @@ static void glDrawText(Renderer* renderer, const char* text, float x, float y, f
     for (int32_t lineIdx = 0; lineCount > lineIdx; lineIdx++) {
         // Find end of current line
         int32_t lineEnd = lineStart;
-        while (textLen > lineEnd && !isNewlineChar(processed[lineEnd])) {
+        while (textLen > lineEnd && !TextUtils_isNewlineChar(processed[lineEnd])) {
             lineEnd++;
         }
         int32_t lineLen = lineEnd - lineStart;
 
         // Horizontal alignment offset for this line
-        float lineWidth = measureLineWidth(font, processed + lineStart, lineLen);
+        float lineWidth = TextUtils_measureLineWidth(font, processed + lineStart, lineLen);
         float halignOffset = 0;
         if (renderer->drawHalign == 1) halignOffset = -lineWidth / 2.0f;
         else if (renderer->drawHalign == 2) halignOffset = -lineWidth;
@@ -676,8 +554,8 @@ static void glDrawText(Renderer* renderer, const char* text, float x, float y, f
         // Render each glyph in the line
         int32_t pos = 0;
         while (lineLen > pos) {
-            uint16_t ch = decodeUtf8(processed + lineStart, lineLen, &pos);
-            FontGlyph* glyph = findGlyph(font, ch);
+            uint16_t ch = TextUtils_decodeUtf8(processed + lineStart, lineLen, &pos);
+            FontGlyph* glyph = TextUtils_findGlyph(font, ch);
             if (glyph == nullptr) continue;
             if (glyph->sourceWidth == 0 || glyph->sourceHeight == 0) {
                 cursorX += glyph->shift;
@@ -729,16 +607,16 @@ static void glDrawText(Renderer* renderer, const char* text, float x, float y, f
             cursorX += glyph->shift;
             if (lineLen > pos) {
                 int32_t savedPos = pos;
-                uint16_t nextCh = decodeUtf8(processed + lineStart, lineLen, &pos);
+                uint16_t nextCh = TextUtils_decodeUtf8(processed + lineStart, lineLen, &pos);
                 pos = savedPos;
-                cursorX += getKerningOffset(glyph, nextCh);
+                cursorX += TextUtils_getKerningOffset(glyph, nextCh);
             }
         }
 
         cursorY += (float) font->emSize;
         // Skip past the newline, treating \r\n and \n\r as single breaks
         if (textLen > lineEnd) {
-            lineStart = skipNewline(processed, lineEnd, textLen);
+            lineStart = TextUtils_skipNewline(processed, lineEnd, textLen);
         } else {
             lineStart = lineEnd;
         }

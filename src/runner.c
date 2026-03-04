@@ -173,7 +173,7 @@ static Instance* createAndInitInstance(Runner* runner, int32_t instanceId, int32
 
     arrput(runner->instances, inst);
 
-    if (shgeti(runner->vmContext->instanceLifecyclesToBeTraced, "*") != 1 || shgeti(runner->vmContext->instanceLifecyclesToBeTraced, objDef->name) != 1) {
+    if (shgeti(runner->vmContext->instanceLifecyclesToBeTraced, "*") != -1 || shgeti(runner->vmContext->instanceLifecyclesToBeTraced, objDef->name) != -1) {
         printf("VM: Instance %s (%d) created at (%f, %f)\n", objDef->name, instanceId, x, y);
     }
 

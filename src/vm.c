@@ -1,6 +1,7 @@
 #include "vm.h"
 #include "vm_builtins.h"
 #include "instance.h"
+#include "runner.h"
 #include "utils.h"
 
 #include <stdio.h>
@@ -306,6 +307,18 @@ static Variable* resolveVarDef(VMContext* ctx, uint32_t varRef) {
     return varDef;
 }
 
+// Finds the first active instance of a given object index.
+// Used when instanceType >= 0 (object reference in GML, e.g. obj_introimage.image_index).
+static Instance* findInstanceByObjectIndex(VMContext* ctx, int16_t objectIndex) {
+    Runner* runner = (Runner*) ctx->runner;
+    int32_t instanceCount = (int32_t) arrlen(runner->instances);
+    for (int32_t i = 0; instanceCount > i; i++) {
+        Instance* inst = runner->instances[i];
+        if (inst->objectIndex == objectIndex && inst->active) return inst;
+    }
+    return nullptr;
+}
+
 static RValue resolveVariableRead(VMContext* ctx, int16_t instanceType, uint32_t varRef) {
     Variable* varDef = resolveVarDef(ctx, varRef);
 
@@ -317,9 +330,24 @@ static RValue resolveVariableRead(VMContext* ctx, int16_t instanceType, uint32_t
         instanceType = access.instanceType;
     }
 
+    // Resolve target instance for object references (instanceType >= 0)
+    Instance* targetInstance = (Instance*) ctx->currentInstance;
+    if (instanceType >= 0) {
+        targetInstance = findInstanceByObjectIndex(ctx, instanceType);
+        if (targetInstance == nullptr) {
+            fprintf(stderr, "VM: READ var '%s' on object index %d but no instance found\n", varDef->name, instanceType);
+            return RValue_makeReal(0.0);
+        }
+    }
+
     // Check for built-in variable (varID == -6 sentinel)
     if (varDef->varID == -6) {
-        return VMBuiltins_getVariable(ctx, varDef->name, access.arrayIndex);
+        // For object references, temporarily swap currentInstance so VMBuiltins reads the correct instance
+        Instance* savedInstance = (Instance*) ctx->currentInstance;
+        if (instanceType >= 0) ctx->currentInstance = targetInstance;
+        RValue result = VMBuiltins_getVariable(ctx, varDef->name, access.arrayIndex);
+        if (instanceType >= 0) ctx->currentInstance = savedInstance;
+        return result;
     }
 
     // Check for array access
@@ -342,8 +370,7 @@ static RValue resolveVariableRead(VMContext* ctx, int16_t instanceType, uint32_t
             }
             case INSTANCE_SELF:
             default: {
-                // INSTANCE_SELF or positive instanceType (object index) - both use current instance
-                struct Instance* inst = ctx->currentInstance;
+                Instance* inst = targetInstance;
                 if (inst != nullptr) {
                     RValue result = arrayMapGet(inst->selfArrayMap, varDef->varID, access.arrayIndex);
                     if (shouldTraceVariable(ctx->varReadsToBeTraced, ctx->dataWin->objt.objects[inst->objectIndex].name, "self", varDef->name)) {
@@ -374,11 +401,15 @@ static RValue resolveVariableRead(VMContext* ctx, int16_t instanceType, uint32_t
             result = ctx->globalVars[varDef->varID];
             break;
         case INSTANCE_SELF:
-        default:
-            // INSTANCE_SELF or positive instanceType (object index)
             require(ctx->selfVarCount > (uint32_t) varDef->varID);
             result = ctx->selfVars[varDef->varID];
             break;
+        default: {
+            // Positive instanceType (object reference) - use target instance's selfVars
+            require(targetInstance->selfVarCount > (uint32_t) varDef->varID);
+            result = targetInstance->selfVars[varDef->varID];
+            break;
+        }
     }
     // Return a non-owning copy: the variable slot retains ownership
     result.ownsString = false;
@@ -391,9 +422,10 @@ static RValue resolveVariableRead(VMContext* ctx, int16_t instanceType, uint32_t
             free(rvalueAsString);
         }
     } else if (instanceType == INSTANCE_SELF || instanceType >= 0) {
-        if (ctx->currentInstance != nullptr && shouldTraceVariable(ctx->varReadsToBeTraced, ctx->dataWin->objt.objects[ctx->currentInstance->objectIndex].name, "self", varDef->name)) {
+        Instance* inst = targetInstance;
+        if (inst != nullptr && shouldTraceVariable(ctx->varReadsToBeTraced, ctx->dataWin->objt.objects[inst->objectIndex].name, "self", varDef->name)) {
             char* rvalueAsString = RValue_toString(result);
-            printf("VM: [%s] READ %s.%s -> %s (instanceId=%d)\n", ctx->currentCodeName, ctx->dataWin->objt.objects[ctx->currentInstance->objectIndex].name, varDef->name, rvalueAsString, ctx->currentInstance->instanceId);
+            printf("VM: [%s] READ %s.%s -> %s (instanceId=%d)\n", ctx->currentCodeName, ctx->dataWin->objt.objects[inst->objectIndex].name, varDef->name, rvalueAsString, inst->instanceId);
             free(rvalueAsString);
         }
     }
@@ -412,9 +444,23 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
         instanceType = access.instanceType;
     }
 
+    // Resolve target instance for object references (instanceType >= 0)
+    Instance* targetInstance = (Instance*) ctx->currentInstance;
+    if (instanceType >= 0) {
+        targetInstance = findInstanceByObjectIndex(ctx, instanceType);
+        if (targetInstance == nullptr) {
+            fprintf(stderr, "VM: WRITE var '%s' on object index %d but no instance found\n", varDef->name, instanceType);
+            return;
+        }
+    }
+
     // Check for built-in variable (varID == -6 sentinel)
     if (varDef->varID == -6) {
+        // For object references, temporarily swap currentInstance so VMBuiltins writes the correct instance
+        Instance* savedInstance = (Instance*) ctx->currentInstance;
+        if (instanceType >= 0) ctx->currentInstance = targetInstance;
         VMBuiltins_setVariable(ctx, varDef->name, val, access.arrayIndex);
+        if (instanceType >= 0) ctx->currentInstance = savedInstance;
         return;
     }
 
@@ -438,8 +484,7 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
                 return;
             case INSTANCE_SELF:
             default: {
-                // INSTANCE_SELF or positive instanceType (object index)
-                struct Instance* inst = ctx->currentInstance;
+                Instance* inst = targetInstance;
                 if (inst != nullptr) {
                     arrayMapSet(&inst->selfArrayMap, varDef->varID, access.arrayIndex, val);
                     if (shouldTraceVariable(ctx->varWritesToBeTraced, ctx->dataWin->objt.objects[inst->objectIndex].name, "self", varDef->name)) {
@@ -474,12 +519,17 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
             dest = &ctx->globalVars[varDef->varID];
             break;
         case INSTANCE_SELF:
-        default:
-            // INSTANCE_SELF or positive instanceType (object index)
             require(ctx->selfVarCount > (uint32_t) varDef->varID);
             shouldLogInstance = shouldTraceVariable(ctx->varWritesToBeTraced, ctx->dataWin->objt.objects[ctx->currentInstance->objectIndex].name, "self", varDef->name);
             dest = &ctx->selfVars[varDef->varID];
             break;
+        default: {
+            // Positive instanceType (object reference) - use target instance's selfVars
+            require(targetInstance->selfVarCount > (uint32_t) varDef->varID);
+            shouldLogInstance = shouldTraceVariable(ctx->varWritesToBeTraced, ctx->dataWin->objt.objects[targetInstance->objectIndex].name, "self", varDef->name);
+            dest = &targetInstance->selfVars[varDef->varID];
+            break;
+        }
     }
 
     // Free old value if it owns a string
@@ -493,7 +543,6 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
         *dest = val;
     }
 
-    // We are getting the NEW value on the dest pointer here (not the old one that was freed), that's why it works :)
     if (shouldLogGlobal) {
         char* rvalueAsString = RValue_toString(*dest);
         printf("VM: [%s] WRITE global.%s = %s\n", ctx->currentCodeName, varDef->name, rvalueAsString);
@@ -501,10 +550,10 @@ static void resolveVariableWrite(VMContext* ctx, int16_t instanceType, uint32_t 
     }
 
     if (shouldLogInstance) {
+        Instance* inst = targetInstance;
         char* rvalueAsString = RValue_toString(*dest);
-        GameObject* obj = &ctx->dataWin->objt.objects[ctx->currentInstance->objectIndex];
-
-        printf("VM: [%s] WRITE %s.%s = %s (instanceId=%d)\n", ctx->currentCodeName, obj->name, varDef->name, rvalueAsString, ctx->currentInstance->instanceId);
+        GameObject* obj = &ctx->dataWin->objt.objects[inst->objectIndex];
+        printf("VM: [%s] WRITE %s.%s = %s (instanceId=%d)\n", ctx->currentCodeName, obj->name, varDef->name, rvalueAsString, inst->instanceId);
         free(rvalueAsString);
     }
 }

@@ -812,6 +812,30 @@ static RValue builtinRoomGoto(VMContext* ctx, RValue* args, int32_t argCount) {
     return RValue_makeUndefined();
 }
 
+static RValue builtinRoomNext(VMContext* ctx, RValue* args, [[maybe_unused]] int32_t argCount) {
+    Runner* runner = requireNotNullMessage(ctx->runner, "VM: room_next called but no runner!");
+    int32_t roomId = RValue_toInt32(args[0]);
+    DataWin* dw = runner->dataWin;
+    repeat(dw->gen8.roomOrderCount, i) {
+        if (dw->gen8.roomOrder[i] == roomId && dw->gen8.roomOrderCount > i + 1) {
+            return RValue_makeReal(dw->gen8.roomOrder[i + 1]);
+        }
+    }
+    return RValue_makeReal(-1);
+}
+
+static RValue builtinRoomPrevious(VMContext* ctx, RValue* args, [[maybe_unused]] int32_t argCount) {
+    Runner* runner = requireNotNullMessage(ctx->runner, "VM: room_previous called but no runner!");
+    int32_t roomId = RValue_toInt32(args[0]);
+    DataWin* dw = runner->dataWin;
+    repeat(dw->gen8.roomOrderCount, i) {
+        if (dw->gen8.roomOrder[i] == roomId && i > 0) {
+            return RValue_makeReal(dw->gen8.roomOrder[i - 1]);
+        }
+    }
+    return RValue_makeReal(-1);
+}
+
 // ===[ VARIABLE FUNCTIONS ]===
 
 static RValue builtinVariableGlobalExists(VMContext* ctx, RValue* args, int32_t argCount) {
@@ -1982,6 +2006,8 @@ void VMBuiltins_registerAll(void) {
     registerBuiltin("room_goto_next", builtinRoomGotoNext);
     registerBuiltin("room_goto_previous", builtinRoomGotoPrevious);
     registerBuiltin("room_goto", builtinRoomGoto);
+    registerBuiltin("room_next", builtinRoomNext);
+    registerBuiltin("room_previous", builtinRoomPrevious);
 
     // Variables
     registerBuiltin("variable_global_exists", builtinVariableGlobalExists);

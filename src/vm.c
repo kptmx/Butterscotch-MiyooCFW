@@ -804,6 +804,17 @@ static void handlePop(VMContext* ctx, uint32_t instr, const uint8_t* extraData) 
             instanceType = RValue_toInt32(instTypeVal);
             RValue_free(&instTypeVal);
         }
+    } else if (varType == VARTYPE_STACKTOP && type1 == GML_TYPE_VARIABLE) {
+        // Simple assignment (Pop.v.v) with STACKTOP: stack bottom-to-top = [value, instanceType]
+        // Pop instanceType first (top), then value (bottom)
+        RValue instTypeVal = stackPop(ctx);
+        instanceType = RValue_toInt32(instTypeVal);
+        RValue_free(&instTypeVal);
+
+        val = stackPop(ctx);
+
+        // Clear STACKTOP type bits so resolveVariableWrite's popArrayAccess won't double-pop
+        varRef = (varRef & 0x07FFFFFF) | ((uint32_t) VARTYPE_NORMAL << 24);
     } else {
         val = stackPop(ctx);
     }

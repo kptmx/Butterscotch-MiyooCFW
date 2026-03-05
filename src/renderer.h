@@ -177,10 +177,55 @@ static void Renderer_drawTile(Renderer* renderer, RoomTile* tile, float offsetX,
     int32_t tpagIndex = Renderer_resolveBackgroundTPAGIndex(renderer->dataWin, tile->backgroundDefinition);
     if (0 > tpagIndex) return;
 
+    TexturePageItem* tpag = &renderer->dataWin->tpag.items[tpagIndex];
+
+    // The tile's sourceX/Y are in the background image's coordinate space (bounding rect).
+    // The TPAG may have been trimmed: actual content starts at (targetX, targetY) within the
+    // bounding rect and has size sourceWidth x sourceHeight. We must clamp the tile's source
+    // rect to the TPAG's content area to avoid sampling adjacent atlas textures.
+    int32_t srcX = tile->sourceX;
+    int32_t srcY = tile->sourceY;
+    int32_t srcW = (int32_t) tile->width;
+    int32_t srcH = (int32_t) tile->height;
+    float drawX = (float) tile->x + offsetX;
+    float drawY = (float) tile->y + offsetY;
+
+    // Clip left/top: if tile starts before the content region
+    int32_t contentLeft = tpag->targetX;
+    int32_t contentTop = tpag->targetY;
+    if (contentLeft > srcX) {
+        int32_t clip = contentLeft - srcX;
+        drawX += (float) clip * tile->scaleX;
+        srcW -= clip;
+        srcX = contentLeft;
+    }
+    if (contentTop > srcY) {
+        int32_t clip = contentTop - srcY;
+        drawY += (float) clip * tile->scaleY;
+        srcH -= clip;
+        srcY = contentTop;
+    }
+
+    // Clip right/bottom: if tile extends past the content region
+    int32_t contentRight = tpag->targetX + tpag->sourceWidth;
+    int32_t contentBottom = tpag->targetY + tpag->sourceHeight;
+    if (srcX + srcW > contentRight) {
+        srcW = contentRight - srcX;
+    }
+    if (srcY + srcH > contentBottom) {
+        srcH = contentBottom - srcY;
+    }
+
+    if (0 >= srcW || 0 >= srcH) return;
+
+    // Convert from bounding-rect coords to atlas-relative coords (subtract targetX/Y)
+    int32_t atlasOffX = srcX - tpag->targetX;
+    int32_t atlasOffY = srcY - tpag->targetY;
+
     // Extract alpha from high byte, default to 1.0 if alpha byte is 0
     uint8_t alphaByte = (tile->color >> 24) & 0xFF;
     float alpha = (alphaByte == 0) ? 1.0f : (float) alphaByte / 255.0f;
     uint32_t bgr = tile->color & 0x00FFFFFF;
 
-    renderer->vtable->drawSpritePart(renderer, tpagIndex, tile->sourceX, tile->sourceY, (int32_t) tile->width, (int32_t) tile->height, (float) tile->x + offsetX, (float) tile->y + offsetY, tile->scaleX, tile->scaleY, bgr, alpha);
+    renderer->vtable->drawSpritePart(renderer, tpagIndex, atlasOffX, atlasOffY, srcW, srcH, drawX, drawY, tile->scaleX, tile->scaleY, bgr, alpha);
 }

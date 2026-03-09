@@ -4,7 +4,9 @@
 
 #define forEachIndexed(type, item, index, array, count) type* item; for (typeof(count) index = 0; index < (count) && ((item) = &(array)[index], 1); index++)
 
-#define repeat(n, it) for (typeof(n) it = 0; it < (n); it++)
+// The "typeof((typeof(n))0" is used to remove the "const" from the typeof
+
+#define repeat(n, it) for (typeof((typeof(n))0) it = 0; it < (n); it++)
 
 #define require(condition) \
     do { \

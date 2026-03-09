@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "utils.h"
+
 // ===[ Parser State ]===
 
 typedef struct {
@@ -86,7 +88,7 @@ static JsonValue* parseString(JsonParser* parser) {
                 case 'u': {
                     // Parse 4-digit hex code point
                     char hex[5] = {0};
-                    for (int i = 0; 4 > i; i++) {
+                    repeat(4, i) {
                         hex[i] = advance(parser);
                     }
                     unsigned long codePoint = strtoul(hex, nullptr, 16);
@@ -378,13 +380,13 @@ static void freeContents(JsonValue* value) {
             free(value->stringValue);
             break;
         case JSON_ARRAY:
-            for (int i = 0; value->array.count > i; i++) {
+            repeat(value->array.count, i) {
                 freeContents(&value->array.items[i]);
             }
             free(value->array.items);
             break;
         case JSON_OBJECT:
-            for (int i = 0; value->object.count > i; i++) {
+            repeat(value->object.count, i) {
                 free(value->object.keys[i]);
                 freeContents(&value->object.values[i]);
             }
@@ -464,7 +466,7 @@ int JsonReader_objectLength(const JsonValue* value) {
 }
 
 JsonValue* JsonReader_getObject(const JsonValue* value, const char* key) {
-    for (int i = 0; value->object.count > i; i++) {
+    repeat(value->object.count, i) {
         if (strcmp(value->object.keys[i], key) == 0) {
             return &value->object.values[i];
         }

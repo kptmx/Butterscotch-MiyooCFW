@@ -755,11 +755,34 @@ static void gsDrawText(Renderer* renderer, const char* text, float x, float y, f
 
     Font* font = &dw->font.fonts[renderer->drawFont];
 
-    // Text color (BGR to RGB)
+    // Resolve font texture page and set up GSTEXTURE
+    int32_t fontTpagIndex = DataWin_resolveTPAG(dw, font->textureOffset);
+    bool hasTexture = false;
+    GSTEXTURE tex;
+    AtlasTPAGEntry* atlasEntry = nullptr;
+    float ratioX = 1.0f;
+    float ratioY = 1.0f;
+
+    if (fontTpagIndex >= 0) {
+        hasTexture = setupTextureForTPAG(gs, &tex, fontTpagIndex);
+        if (hasTexture) {
+            atlasEntry = &gs->atlasTPAGEntries[fontTpagIndex];
+            TexturePageItem* fontTpag = &dw->tpag.items[fontTpagIndex];
+
+            // Compute ratio between atlas size and original TPAG size (in case the preprocessor downscaled)
+            float origW = (float) fontTpag->sourceWidth;
+            float origH = (float) fontTpag->sourceHeight;
+            ratioX = (origW > 0) ? ((float) atlasEntry->width / origW) : 1.0f;
+            ratioY = (origH > 0) ? ((float) atlasEntry->height / origH) : 1.0f;
+        }
+    }
+
+    // GS modulate mode: Output = Texture * Vertex / 128
+    // Scale vertex RGB from 0-255 to 0-128 so white (255) becomes 1.0x multiplier
     uint32_t color = renderer->drawColor;
-    uint8_t r = BGR_R(color);
-    uint8_t g = BGR_G(color);
-    uint8_t b = BGR_B(color);
+    uint8_t r = hasTexture ? (BGR_R(color) >> 1) : BGR_R(color);
+    uint8_t g = hasTexture ? (BGR_G(color) >> 1) : BGR_G(color);
+    uint8_t b = hasTexture ? (BGR_B(color) >> 1) : BGR_B(color);
     uint8_t a = (uint8_t) (renderer->drawAlpha * 128.0f);
     u64 textColor = GS_SETREG_RGBAQ(r, g, b, a, 0x00);
 
@@ -795,7 +818,7 @@ static void gsDrawText(Renderer* renderer, const char* text, float x, float y, f
 
         float cursorX = halignOffset;
 
-        // Draw each glyph as a colored rectangle (font texture rendering will be added later)
+        // Draw each glyph
         int32_t pos = 0;
         while (lineLen > pos) {
             uint16_t ch = TextUtils_decodeUtf8(line, lineLen, &pos);
@@ -813,7 +836,18 @@ static void gsDrawText(Renderer* renderer, const char* text, float x, float y, f
                 float sx2 = (glyphX + glyphW - (float) gs->viewX) * gs->scaleX + gs->offsetX;
                 float sy2 = (glyphY + glyphH - (float) gs->viewY) * gs->scaleY + gs->offsetY;
 
-                gsKit_prim_sprite(gs->gsGlobal, sx1, sy1, sx2, sy2, gs->zCounter, textColor);
+                if (hasTexture) {
+                    // Compute UV coordinates: map glyph position within the font TPAG to atlas space
+                    float u1 = (float) atlasEntry->atlasX + (float) glyph->sourceX * ratioX;
+                    float v1 = (float) atlasEntry->atlasY + (float) glyph->sourceY * ratioY;
+                    float u2 = u1 + (float) glyph->sourceWidth * ratioX;
+                    float v2 = v1 + (float) glyph->sourceHeight * ratioY;
+
+                    gsKit_prim_sprite_texture(gs->gsGlobal, &tex, sx1, sy1, u1, v1, sx2, sy2, u2, v2, gs->zCounter, textColor);
+                } else {
+                    // Fallback: draw colored rectangle if font texture is not available
+                    gsKit_prim_sprite(gs->gsGlobal, sx1, sy1, sx2, sy2, gs->zCounter, textColor);
+                }
             }
 
             cursorX += (float) glyph->shift;

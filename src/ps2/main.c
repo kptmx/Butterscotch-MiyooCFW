@@ -225,10 +225,11 @@ static void loadingScreenCallback(const char* chunkName, int chunkIndex, int tot
 int main(int argc, char* argv[]) {
     SifInitRpc(0);
 
-    const char* dataWinPath = "host:data.win";
-    if (argc > 1) {
-        dataWinPath = argv[1];
-    }
+    PS2Utils_extractDeviceKey(argv[0]);
+
+    fprintf(stderr, "argv0 is %s, device key is %s\n", argv[0], deviceKey.key);
+
+    const char* dataWinPath = PS2Utils_createDevicePath("DATA.WIN");
 
     printf("Butterscotch PS2 - Loading %s\n", dataWinPath);
 
@@ -327,6 +328,7 @@ int main(int argc, char* argv[]) {
             .progressCallbackUserData = &loadingState,
         }
     );
+    free(dataWinPath);
 
     {
         struct mallinfo mi = mallinfo();

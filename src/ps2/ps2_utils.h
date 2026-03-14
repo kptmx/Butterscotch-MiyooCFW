@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gsKit.h>
+#include <stdint.h>
 
 #define GS_VRAM_SIZE (4 * 1024 * 1024)
 
@@ -11,3 +12,14 @@ static inline uint8_t alphaToGS(float alpha) {
     else if (0.0f > alpha) alpha = 0.0f;
     return (uint8_t) (alpha * 128.0f);
 }
+
+typedef struct {
+    char* key;
+    bool usesISO9660;
+} PS2DeviceKey;
+
+extern PS2DeviceKey deviceKey;
+extern bool deviceKeyLoaded;
+
+void PS2Utils_extractDeviceKey(const char* path);
+char* PS2Utils_createDevicePath(const char* path);

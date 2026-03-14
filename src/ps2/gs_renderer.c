@@ -26,7 +26,9 @@
 // Loads an entire file from host into a memalign'd buffer. Returns size via outSize.
 // Aborts on failure.
 static uint8_t* loadFileRaw(const char* path, uint32_t* outSize) {
-    FILE* f = fopen(path, "rb");
+    char* textureBinPath = PS2Utils_createDevicePath(path);
+
+    FILE* f = fopen(textureBinPath, "rb");
     if (f == nullptr) {
         fprintf(stderr, "GsRenderer: Failed to open %s\n", path);
         abort();
@@ -59,14 +61,16 @@ static uint8_t* loadFileRaw(const char* path, uint32_t* outSize) {
     }
 
     *outSize = (uint32_t) size;
+    free(textureBinPath);
     return data;
 }
 
 // ===[ Atlas Loading ]===
 static void loadAtlas(GsRenderer* gs) {
-    FILE* f = fopen("host:ATLAS.BIN", "rb");
+    char* atlasBinPath = PS2Utils_createDevicePath("ATLAS.BIN");
+    FILE* f = fopen(atlasBinPath, "rb");
     if (f == nullptr) {
-        fprintf(stderr, "GsRenderer: Failed to open host:ATLAS.BIN\n");
+        fprintf(stderr, "GsRenderer: Failed to open %s\n", atlasBinPath);
         abort();
     }
 
@@ -157,6 +161,8 @@ static void loadAtlas(GsRenderer* gs) {
     }
 
     fprintf(stderr, "GsRenderer: ATLAS.BIN loaded - %u TPAG entries, %u tile entries, %u atlases\n", gs->atlasTPAGCount, gs->atlasTileCount, gs->atlasCount);
+
+    free(atlasBinPath);
 }
 
 // ===[ CLUT Loading and VRAM Upload ]===
@@ -178,7 +184,7 @@ static void loadAndUploadCLUTs(GsRenderer* gs) {
     // Load and upload CLUT4 (4bpp palettes: 16 colors * 4 bytes = 64 bytes each)
     {
         uint32_t clut4FileSize;
-        uint8_t* clut4Data = loadFileRaw("host:CLUT4.BIN", &clut4FileSize);
+        uint8_t* clut4Data = loadFileRaw("CLUT4.BIN", &clut4FileSize);
         gs->clut4Count = clut4FileSize / CLUT4_ENTRY_SIZE;
         fprintf(stderr, "GsRenderer: CLUT4.BIN loaded - %u CLUTs (%u bytes)\n", gs->clut4Count, clut4FileSize);
 
@@ -206,7 +212,7 @@ static void loadAndUploadCLUTs(GsRenderer* gs) {
     // Load and upload CLUT8 (8bpp palettes: 256 colors * 4 bytes = 1024 bytes each)
     {
         uint32_t clut8FileSize;
-        uint8_t* clut8Data = loadFileRaw("host:CLUT8.BIN", &clut8FileSize);
+        uint8_t* clut8Data = loadFileRaw("CLUT8.BIN", &clut8FileSize);
         gs->clut8Count = clut8FileSize / CLUT8_ENTRY_SIZE;
         fprintf(stderr, "GsRenderer: CLUT8.BIN loaded - %u CLUTs (%u bytes)\n", gs->clut8Count, clut8FileSize);
 
@@ -381,7 +387,7 @@ static int32_t allocateChunks(GsRenderer* gs, int chunksNeeded) {
 // Upload atlas pixel data from TEX file to the given VRAM chunk(s).
 static void uploadAtlasToChunk(GsRenderer* gs, uint16_t atlasId, int32_t firstChunk) {
     char path[64];
-    snprintf(path, sizeof(path), "host:TEX%u.BIN", atlasId);
+    snprintf(path, sizeof(path), "TEX%u.BIN", atlasId);
 
     uint32_t fileSize;
     uint8_t* data = loadFileRaw(path, &fileSize);

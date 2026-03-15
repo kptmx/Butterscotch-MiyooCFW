@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "text_utils.h"
 #include "ps2_utils.h"
+#include "matrix_math.h"
 
 // ===[ Constants ]===
 #define ATLAS_WIDTH 512
@@ -678,7 +679,7 @@ static void gsEndView([[maybe_unused]] Renderer* renderer) {
     // No-op
 }
 
-static void gsDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, [[maybe_unused]] float angleDeg, uint32_t color, float alpha) {
+static void gsDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y, float originX, float originY, float xscale, float yscale, float angleDeg, uint32_t color, float alpha) {
     GsRenderer* gs = (GsRenderer*) renderer;
     DataWin* dw = renderer->dataWin;
 
@@ -688,35 +689,79 @@ static void gsDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y
     float boundW = (float) tpag->boundingWidth;
     float boundH = (float) tpag->boundingHeight;
 
-    // Compute screen rect in game coordinates
-    float gameX1 = x - originX * xscale;
-    float gameY1 = y - originY * yscale;
-    float gameX2 = x + (boundW - originX) * xscale;
-    float gameY2 = y + (boundH - originY) * yscale;
+    // Compute 4 screen-space corners (tristrip Z-pattern: top-left, top-right, bottom-left, bottom-right)
+    // sx0/sy0 = top-left, sx1/sy1 = top-right, sx2/sy2 = bottom-left, sx3/sy3 = bottom-right
+    float sx0, sy0, sx1, sy1, sx2, sy2, sx3, sy3;
+    bool hasRotation = angleDeg != 0.0f;
 
-    // Apply view offset and scale
-    float sx1 = (gameX1 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
-    float sy1 = (gameY1 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
-    float sx2 = (gameX2 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
-    float sy2 = (gameY2 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+    if (hasRotation) {
+        // Rotated: compute 4 transformed corners via matrix, same approach as the GLFW renderer
+        float localX0 = -originX;
+        float localY0 = -originY;
+        float localX1 = boundW - originX;
+        float localY1 = boundH - originY;
+
+        // Build 2D transform: T(x,y) * R(-angleDeg) * S(xscale, yscale)
+        // Negate angle because Y-down coordinate system
+        float angleRad = -angleDeg * ((float) M_PI / 180.0f);
+        Matrix4f transform;
+        Matrix4f_setTransform2D(&transform, x, y, xscale, yscale, angleRad);
+
+        float gx0, gy0, gx1, gy1, gx2, gy2, gx3, gy3;
+        Matrix4f_transformPoint(&transform, localX0, localY0, &gx0, &gy0); // top-left
+        Matrix4f_transformPoint(&transform, localX1, localY0, &gx1, &gy1); // top-right
+        Matrix4f_transformPoint(&transform, localX0, localY1, &gx2, &gy2); // bottom-left
+        Matrix4f_transformPoint(&transform, localX1, localY1, &gx3, &gy3); // bottom-right
+
+        // Apply view offset and scale
+        sx0 = (gx0 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy0 = (gy0 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx1 = (gx1 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy1 = (gy1 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx2 = (gx2 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy2 = (gy2 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx3 = (gx3 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy3 = (gy3 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+    } else {
+        // Axis-aligned: simple rect math
+        float gameX1 = x - originX * xscale;
+        float gameY1 = y - originY * yscale;
+        float gameX2 = x + (boundW - originX) * xscale;
+        float gameY2 = y + (boundH - originY) * yscale;
+
+        // Apply view offset and scale
+        sx0 = (gameX1 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy0 = (gameY1 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx1 = (gameX2 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy1 = (gameY1 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx2 = (gameX1 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy2 = (gameY2 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+        sx3 = (gameX2 - (float) gs->viewX) * gs->scaleX + gs->offsetX;
+        sy3 = (gameY2 - (float) gs->viewY) * gs->scaleY + gs->offsetY;
+    }
 
     // View frustum culling: skip if entirely off-screen (handles negative scales via min/max)
-    float minSX = (sx1 < sx2) ? sx1 : sx2;
-    float maxSX = (sx1 > sx2) ? sx1 : sx2;
-    float minSY = (sy1 < sy2) ? sy1 : sy2;
-    float maxSY = (sy1 > sy2) ? sy1 : sy2;
+    float minSX = fminf(fminf(sx0, sx1), fminf(sx2, sx3));
+    float maxSX = fmaxf(fmaxf(sx0, sx1), fmaxf(sx2, sx3));
+    float minSY = fminf(fminf(sy0, sy1), fminf(sy2, sy3));
+    float maxSY = fmaxf(fmaxf(sy0, sy1), fmaxf(sy2, sy3));
     if (maxSX < 0.0f || minSX > PS2_SCREEN_WIDTH || maxSY < 0.0f || minSY > PS2_SCREEN_HEIGHT)
         return;
 
     // Set up GSTEXTURE for this TPAG entry
     GSTEXTURE tex;
     if (!setupTextureForTPAG(gs, &tex, tpagIndex)) {
-        // Fallback: draw colored rectangle if no atlas mapping
+        // Fallback: draw colored quad if no atlas mapping
         uint8_t r = BGR_R(color);
         uint8_t g = BGR_G(color);
         uint8_t b = BGR_B(color);
         uint8_t a = alphaToGS(alpha);
-        gsKit_prim_sprite(gs->gsGlobal, sx1, sy1, sx2, sy2, gs->zCounter, GS_SETREG_RGBAQ(r, g, b, a, 0x00));
+        u64 fallbackColor = GS_SETREG_RGBAQ(r, g, b, a, 0x00);
+        if (hasRotation) {
+            gsKit_prim_quad(gs->gsGlobal, sx0, sy0, sx1, sy1, sx2, sy2, sx3, sy3, gs->zCounter, fallbackColor);
+        } else {
+            gsKit_prim_sprite(gs->gsGlobal, sx0, sy0, sx3, sy3, gs->zCounter, fallbackColor);
+        }
         gs->zCounter++;
         return;
     }
@@ -729,10 +774,10 @@ static void gsDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y
     // sample from atlasW x atlasH texels
 
     // UV coords within the 512x512 atlas (in texels for gsKit)
-    float u1 = (float) atlasEntry->atlasX;
-    float v1 = (float) atlasEntry->atlasY;
-    float u2 = u1 + (float) atlasEntry->width;
-    float v2 = v1 + (float) atlasEntry->height;
+    float u0 = (float) atlasEntry->atlasX;
+    float v0 = (float) atlasEntry->atlasY;
+    float u1 = u0 + (float) atlasEntry->width;
+    float v1 = v0 + (float) atlasEntry->height;
 
     // GS modulate mode: Output = Texture * Vertex / 128
     // Scale vertex RGB from 0-255 to 0-128 so white (255) becomes 128 (1.0x multiplier)
@@ -742,7 +787,21 @@ static void gsDrawSprite(Renderer* renderer, int32_t tpagIndex, float x, float y
     uint8_t a = alphaToGS(alpha);
     u64 gsColor = GS_SETREG_RGBAQ(r, g, b, a, 0x00);
 
-    gsKit_prim_sprite_texture(gs->gsGlobal, &tex, sx1, sy1, u1, v1, sx2, sy2, u2, v2, gs->zCounter, gsColor);
+    if (hasRotation) {
+        // Tristrip Z-pattern: needs 4 vertices for rotated quads
+        gsKit_prim_quad_texture(
+            gs->gsGlobal,
+            &tex,
+            sx0, sy0, u0, v0, // top-left
+            sx1, sy1, u1, v0, // top-right
+            sx2, sy2, u0, v1, // bottom-left
+            sx3, sy3, u1, v1, // bottom-right
+            gs->zCounter,
+            gsColor
+            );
+    } else {
+        gsKit_prim_sprite_texture(gs->gsGlobal, &tex, sx0, sy0, u0, v0, sx3, sy3, u1, v1, gs->zCounter, gsColor);
+    }
     gs->zCounter++;
 }
 

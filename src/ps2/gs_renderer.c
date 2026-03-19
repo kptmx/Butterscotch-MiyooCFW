@@ -403,6 +403,7 @@ static void uploadAtlasToChunk(GsRenderer* gs, uint16_t atlasId, int32_t firstCh
     uint16_t height = BinaryUtils_readUint16(header + 3);
     uint8_t bpp = BinaryUtils_readUint8(header + 5);
     uint32_t pixelDataSize = BinaryUtils_readUint32(header + 6);
+    uint8_t compressionType = BinaryUtils_readUint8(header + 10);
 
     if (width != ATLAS_WIDTH || height != ATLAS_HEIGHT) {
         fprintf(stderr, "GsRenderer: Atlas %u unexpected dimensions %ux%u (expected %ux%u)\n", atlasId, width, height, ATLAS_WIDTH, ATLAS_HEIGHT);
@@ -414,17 +415,44 @@ static void uploadAtlasToChunk(GsRenderer* gs, uint16_t atlasId, int32_t firstCh
         abort();
     }
 
-    // Read pixel data (file cursor is already at the right position after the header)
-    uint8_t* pixelData = (uint8_t*) memalign(128, pixelDataSize);
-    if (pixelData == nullptr) {
+    // Read pixel data from file (may be compressed)
+    uint8_t* rawData = (uint8_t*) memalign(128, pixelDataSize);
+    if (rawData == nullptr) {
         fprintf(stderr, "GsRenderer: Failed to allocate %u bytes for atlas %u pixel data\n", pixelDataSize, atlasId);
         abort();
     }
 
-    size_t pixelRead = fread(pixelData, 1, pixelDataSize, gs->texturesFile);
+    size_t pixelRead = fread(rawData, 1, pixelDataSize, gs->texturesFile);
     if (pixelRead != pixelDataSize) {
         fprintf(stderr, "GsRenderer: Short read for atlas %u pixel data (expected %u, got %zu)\n", atlasId, pixelDataSize, pixelRead);
         abort();
+    }
+
+    // Decompress if needed
+    uint8_t* pixelData;
+    if (compressionType == 1) {
+        // RLE decompression
+        uint32_t uncompressedSize = (bpp == 4) ? (uint32_t)((width * height + 1) / 2) : (uint32_t)(width * height);
+        pixelData = (uint8_t*) memalign(128, uncompressedSize);
+        if (pixelData == nullptr) {
+            fprintf(stderr, "GsRenderer: Failed to allocate %u bytes for atlas %u decompressed data\n", uncompressedSize, atlasId);
+            abort();
+        }
+
+        uint32_t srcPos = 0;
+        uint32_t dstPos = 0;
+        while (pixelDataSize > srcPos + 1 && uncompressedSize > dstPos) {
+            uint8_t runLength = rawData[srcPos++];
+            uint8_t value = rawData[srcPos++];
+            for (uint8_t j = 0; runLength > j && uncompressedSize > dstPos; j++) {
+                pixelData[dstPos++] = value;
+            }
+        }
+
+        free(rawData);
+    } else {
+        // Uncompressed, use data directly
+        pixelData = rawData;
     }
 
     // Upload pixel data to VRAM at the chunk's address

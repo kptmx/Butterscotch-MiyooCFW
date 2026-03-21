@@ -10,6 +10,7 @@
 #include <libpad.h>
 #include <libmc.h>
 #include <timer.h>
+#include <unistd.h>
 #include <sbv_patches.h>
 
 #include "runner.h"
@@ -195,9 +196,10 @@ static void loadingScreenCallback(const char* chunkName, int chunkIndex, int tot
 
     // Memory usage below the status text
     u64 gray = GS_SETREG_RGBAQ(0xAA, 0xAA, 0xAA, 0x80, 0x00);
-    struct mallinfo mi = mallinfo();
+    void* heapTop = sbrk(0);
+    int32_t usedBytes = (int32_t) (uintptr_t) heapTop;
     char memText[48];
-    snprintf(memText, sizeof(memText), "Memory: %.1f/%.1f MB", mi.uordblks / (1024.0f * 1024.0f), MAX_MEMORY_BYTES / (1024.0f * 1024.0f));
+    snprintf(memText, sizeof(memText), "Memory: %.1f/%.1f MB", usedBytes / (1024.0f * 1024.0f), MAX_MEMORY_BYTES / (1024.0f * 1024.0f));
     gsKit_fontm_print_scaled(gs, fontm, 320.0f, barY + barH + 30.0f, 1, 0.4f, gray, memText);
 
     // Record item counts for already-parsed chunks (callback fires before parsing, so we scan all counts each time and add any newly non-zero ones in the order they appear)
@@ -383,8 +385,10 @@ int main(int argc, char* argv[]) {
     free(dataWinPath);
 
     {
-        struct mallinfo mi = mallinfo();
-        printf("Memory after data.win parsing: used=%d bytes (%.1f KB), total=%d bytes (%.1f KB), free=%d bytes (%.1f KB)\n", mi.uordblks, mi.uordblks / 1024.0f, MAX_MEMORY_BYTES, MAX_MEMORY_BYTES / 1024.0f, MAX_MEMORY_BYTES - mi.uordblks, (MAX_MEMORY_BYTES - mi.uordblks) / 1024.0f);
+        void* heapTop = sbrk(0);
+        int32_t usedBytes = (int32_t) (uintptr_t) heapTop;
+        int32_t freeBytes = MAX_MEMORY_BYTES - usedBytes;
+        printf("Memory after data.win parsing: used=%d bytes (%.1f KB), total=%d bytes (%.1f KB), free=%d bytes (%.1f KB)\n", usedBytes, usedBytes / 1024.0f, MAX_MEMORY_BYTES, MAX_MEMORY_BYTES / 1024.0f, freeBytes, freeBytes / 1024.0f);
     }
     // ===[ Create texture cache and renderer ]===
     drawStatusScreen(gsGlobal, gsFontM, dataWin->gen8.displayName, "Creating renderer...", &loadingState);
@@ -445,8 +449,10 @@ int main(int argc, char* argv[]) {
     }
 
     {
-        struct mallinfo mi = mallinfo();
-        printf("Memory after VM and runner creation: used=%d bytes (%.1f KB), total=%d bytes (%.1f KB), free=%d bytes (%.1f KB)\n", mi.uordblks, mi.uordblks / 1024.0f, MAX_MEMORY_BYTES, MAX_MEMORY_BYTES / 1024.0f, MAX_MEMORY_BYTES - mi.uordblks, (MAX_MEMORY_BYTES - mi.uordblks) / 1024.0f);
+        void* heapTop = sbrk(0);
+        int32_t usedBytes = (int32_t) (uintptr_t) heapTop;
+        int32_t freeBytes = MAX_MEMORY_BYTES - usedBytes;
+        printf("Memory after VM and runner creation: used=%d bytes (%.1f KB), total=%d bytes (%.1f KB), free=%d bytes (%.1f KB)\n", usedBytes, usedBytes / 1024.0f, MAX_MEMORY_BYTES, MAX_MEMORY_BYTES / 1024.0f, freeBytes, freeBytes / 1024.0f);
     }
 
     runner->renderer = renderer;
@@ -490,8 +496,6 @@ int main(int argc, char* argv[]) {
         // Calculate delta time since last vsync
         double deltaTime = (double) (frameStartTime - lastVsyncTime) / (double) kBUSCLK;
         lastVsyncTime = frameStartTime;
-
-        struct mallinfo mi = mallinfo();
 
         // ===[ Poll Controller (always poll every vsync) ]===
         // NOTE: We do NOT call RunnerKeyboard_beginFrame here! Pressed/released edges accumulate across vsyncs so that quick taps on non-game-frame
@@ -669,7 +673,9 @@ int main(int argc, char* argv[]) {
             // ===[ Debug Overlay ]===
             {
                 u64 debugColor = GS_SETREG_RGBAQ(0xFF, 0xFF, 0xFF, 0x80, 0x00);
-                int32_t freeBytes = MAX_MEMORY_BYTES - mi.uordblks;
+                // sbrk(0) returns the actual heap frontier; true free = top of RAM - sbrk frontier
+                void* heapTop = sbrk(0);
+                int32_t freeBytes = MAX_MEMORY_BYTES - (int32_t) (uintptr_t) heapTop;
 
                 char debugText[256];
                 uint32_t vramFreeBytes = GS_VRAM_SIZE - gsGlobal->CurrentPointer;

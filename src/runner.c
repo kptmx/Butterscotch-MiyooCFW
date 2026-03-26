@@ -210,10 +210,13 @@ void Runner_executeEvent(Runner* runner, Instance* instance, int32_t eventType, 
 }
 
 void Runner_executeEventForAll(Runner* runner, int32_t eventType, int32_t eventSubtype) {
-    // Iterate over a snapshot of the current instance count to avoid issues if instances are added
+    // Iterate BACKWARDS over instances, matching the HTML5 runner's PerformEvent which iterates from pool.length-1 down to 0
+    // Instances added later to the array are executed first
+    // This matters for things like for DELTARUNE's inventory key check
+    // See yyInstance.js for reference
     int32_t count = (int32_t) arrlen(runner->instances);
-    repeat(count, i) {
-        Instance* inst = runner->instances[i];
+    for (int32_t index = count - 1; index >= 0; index--) {
+        Instance* inst = runner->instances[index];
         if (inst->active) {
             Runner_executeEvent(runner, inst, eventType, eventSubtype);
         }

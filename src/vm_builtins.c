@@ -3977,13 +3977,9 @@ static RValue builtinAssetGetIndex(VMContext* ctx, RValue* args, int32_t argCoun
 
     const char* name = RValue_toString(args[0]);
 
-    repeat(ctx->dataWin->objt.count, i)
-    {
-        if(strcmp(ctx->dataWin->objt.objects[i].name, name) == 0)
-        {
+    repeat(ctx->dataWin->objt.count, i) {
+        if (strcmp(ctx->dataWin->objt.objects[i].name, name) == 0)
             return RValue_makeReal((double) i);
-            break;
-        }
     }
 
     return RValue_makeReal((double) -1);

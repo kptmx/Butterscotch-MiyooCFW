@@ -187,6 +187,7 @@ void Runner_executeEventFromObject(Runner* runner, Instance* instance, int32_t s
     vm->currentEventSubtype = eventSubtype;
     vm->currentEventObjectIndex = ownerObjectIndex;
 
+#ifndef DISABLE_VM_TRACING
     if (codeId >= 0 && shlen(vm->eventsToBeTraced) != -1) {
         const char* eventName = Runner_getEventName(eventType, eventSubtype);
         const char* objectName = runner->dataWin->objt.objects[instance->objectIndex].name;
@@ -201,6 +202,7 @@ void Runner_executeEventFromObject(Runner* runner, Instance* instance, int32_t s
             }
         }
     }
+#endif
 
     executeCode(runner, instance, codeId);
 
@@ -413,6 +415,7 @@ void Runner_draw(Runner* runner) {
                     offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
                 }
 
+#ifndef DISABLE_VM_TRACING
                 // Trace tile drawing if requested
                 if (shlen(runner->vmContext->tilesToBeTraced) > 0) {
                     DataWin* dataWin = runner->dataWin;
@@ -436,6 +439,7 @@ void Runner_draw(Runner* runner) {
                         }
                     }
                 }
+#endif
 
                 Renderer_drawTile(runner->renderer, tile, offsetX, offsetY);
             }
@@ -464,6 +468,7 @@ void Runner_draw(Runner* runner) {
                             offsetY = runner->tileLayerMap[layerIdx].value.offsetY;
                         }
 
+#ifndef DISABLE_VM_TRACING
                         // Trace tile drawing if requested
                         if (shlen(runner->vmContext->tilesToBeTraced) > 0) {
                             DataWin* dataWin = runner->dataWin;
@@ -487,6 +492,7 @@ void Runner_draw(Runner* runner) {
                                 }
                             }
                         }
+#endif
 
                         Renderer_drawTile(runner->renderer, tile, offsetX, offsetY);
                     }
@@ -584,9 +590,11 @@ static Instance* createAndInitInstance(Runner* runner, int32_t instanceId, int32
     hmput(runner->instancesToId, instanceId, inst);
     arrput(runner->instances, inst);
 
+#ifndef DISABLE_VM_TRACING
     if (shgeti(runner->vmContext->instanceLifecyclesToBeTraced, "*") != -1 || shgeti(runner->vmContext->instanceLifecyclesToBeTraced, objDef->name) != -1) {
         fprintf(stderr, "VM: Instance %s (%d) created at (%f, %f)\n", objDef->name, instanceId, x, y);
     }
+#endif
 
     return inst;
 }
@@ -797,9 +805,11 @@ void Runner_destroyInstance([[maybe_unused]] Runner* runner, Instance* inst) {
     inst->active = false;
     inst->destroyed = true;
 
+#ifndef DISABLE_VM_TRACING
     if (shgeti(runner->vmContext->instanceLifecyclesToBeTraced, "*") != -1 || shgeti(runner->vmContext->instanceLifecyclesToBeTraced, gameObject->name) != -1) {
         fprintf(stderr, "VM: Instance %s (%d) destroyed\n", gameObject->name, inst->instanceId);
     }
+#endif
 }
 
 void Runner_cleanupDestroyedInstances(Runner* runner) {
@@ -865,6 +875,7 @@ static void executeCollisionEvent(Runner* runner, Instance* self, Instance* othe
 
     vm->currentEventObjectIndex = ownerObjectIndex;
 
+#ifndef DISABLE_VM_TRACING
     if (codeId >= 0 && shlen(vm->eventsToBeTraced) != -1) {
         const char* selfName = runner->dataWin->objt.objects[self->objectIndex].name;
         const char* targetName = runner->dataWin->objt.objects[targetObjectIndex].name;
@@ -873,6 +884,7 @@ static void executeCollisionEvent(Runner* runner, Instance* self, Instance* othe
             fprintf(stderr, "Runner: [%s] Collision with %s (instanceId=%d, otherId=%d)\n", selfName, targetName, self->instanceId, other->instanceId);
         }
     }
+#endif
 
     executeCode(runner, self, codeId);
 
@@ -1190,17 +1202,21 @@ void Runner_step(Runner* runner) {
 
         repeat(GML_ALARM_COUNT, alarmIdx) {
             if (inst->alarm[alarmIdx] > 0) {
+#ifndef DISABLE_VM_TRACING
                 if (shgeti(runner->vmContext->alarmsToBeTraced, "*") != -1 || shgeti(runner->vmContext->alarmsToBeTraced, object->name) != -1) {
                     fprintf(stderr, "VM: [%s] Ticking down Alarm[%d] (instanceId=%d), current tick is %d\n", object->name, alarmIdx, inst->instanceId, inst->alarm[alarmIdx]);
                 }
+#endif
 
                 inst->alarm[alarmIdx]--;
                 if (inst->alarm[alarmIdx] == 0) {
                     inst->alarm[alarmIdx] = -1;
 
+#ifndef DISABLE_VM_TRACING
                     if (shgeti(runner->vmContext->alarmsToBeTraced, "*") != -1 || shgeti(runner->vmContext->alarmsToBeTraced, object->name) != -1) {
                         fprintf(stderr, "VM: [%s] Firing Alarm[%d] (instanceId=%d)\n", object->name, alarmIdx, inst->instanceId);
                     }
+#endif
 
                     Runner_executeEvent(runner, inst, EVENT_ALARM, alarmIdx);
                 }

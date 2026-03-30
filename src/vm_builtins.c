@@ -441,9 +441,13 @@ void VMBuiltins_setVariable(VMContext* ctx, const char* name, RValue val, int32_
         if (strcmp(name, "alarm") == 0) {
             if (isValidAlarmIndex(arrayIndex)) {
                 int32_t newValue = RValue_toInt32(val);
+
+#ifndef DISABLE_VM_TRACING
                 if (shgeti(ctx->alarmsToBeTraced, "*") != -1 || shgeti(ctx->alarmsToBeTraced, runner->dataWin->objt.objects[inst->objectIndex].name) != -1) {
                     fprintf(stderr, "VM: [%s] Setting Alarm[%d] = %d (instanceId=%d)\n", runner->dataWin->objt.objects[inst->objectIndex].name, arrayIndex, newValue, inst->instanceId);
                 }
+#endif
+
                 inst->alarm[arrayIndex] = newValue;
             }
             return;
@@ -3829,9 +3833,11 @@ static RValue builtinActionSetAlarm(VMContext* ctx, [[maybe_unused]] RValue* arg
         Instance* inst = (Instance*) ctx->currentInstance;
         Runner* runner = (Runner*) ctx->runner;
 
+#ifndef DISABLE_VM_TRACING
         if (shgeti(ctx->alarmsToBeTraced, "*") != -1 || shgeti(ctx->alarmsToBeTraced, runner->dataWin->objt.objects[inst->objectIndex].name) != -1) {
             fprintf(stderr, "VM: [%s] Setting Alarm[%d] = %d (instanceId=%d)\n", runner->dataWin->objt.objects[inst->objectIndex].name, alarmIndex, steps, inst->instanceId);
         }
+#endif
 
         inst->alarm[alarmIndex] = steps;
     }

@@ -75,6 +75,8 @@ elseif(PLATFORM STREQUAL "ps2")
     add_compile_definitions(USE_FLOAT_REALS)
     # By disabling Int64 support, we can fit the entire RValue struct in 8 bytes, improving performance and memory usage
     add_compile_definitions(NO_RVALUE_INT64)
+    # Disable Butterscotch VM/interpreter tracing checks
+    add_compile_definitions(DISABLE_VM_TRACING)
     # Treat unsuffixed float constants as single-precision to avoid accidental
     # float->double promotions on platforms with no hardware double
     add_compile_options(-fsingle-precision-constant)

@@ -231,27 +231,51 @@ RValue VMBuiltins_getVariable(VMContext* ctx, const char* name, int32_t arrayInd
         if (strcmp(name, "room_height") == 0) return RValue_makeReal((GMLReal) runner->currentRoom->height);
         if (strcmp(name, "room_persistent") == 0) return RValue_makeBool(runner->currentRoom->persistent);
         if (strcmp(name, "view_current") == 0) return RValue_makeReal((GMLReal) runner->viewCurrent);
-        if (strcmp(name, "view_xview") == 0 || strcmp(name, "view_xport") == 0) {
+        if (strcmp(name, "view_xview") == 0) {
             if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
                 return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].viewX);
             }
             return RValue_makeReal(0.0);
         }
-        if (strcmp(name, "view_yview") == 0 || strcmp(name, "view_yport") == 0) {
+        if (strcmp(name, "view_yview") == 0) {
             if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
                 return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].viewY);
             }
             return RValue_makeReal(0.0);
         }
-        if (strcmp(name, "view_wview") == 0 || strcmp(name, "view_wport") == 0) {
+        if (strcmp(name, "view_wview") == 0) {
             if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
                 return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].viewWidth);
             }
             return RValue_makeReal(0.0);
         }
-        if (strcmp(name, "view_hview") == 0 || strcmp(name, "view_hport") == 0) {
+        if (strcmp(name, "view_hview") == 0) {
             if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
                 return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].viewHeight);
+            }
+            return RValue_makeReal(0.0);
+        }
+        if (strcmp(name, "view_xport") == 0) {
+            if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+                return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].portX);
+            }
+            return RValue_makeReal(0.0);
+        }
+        if (strcmp(name, "view_yport") == 0) {
+            if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+                return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].portY);
+            }
+            return RValue_makeReal(0.0);
+        }
+        if (strcmp(name, "view_wport") == 0) {
+            if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+                return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].portWidth);
+            }
+            return RValue_makeReal(0.0);
+        }
+        if (strcmp(name, "view_hport") == 0) {
+            if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+                return RValue_makeReal((GMLReal) runner->currentRoom->views[arrayIndex].portHeight);
             }
             return RValue_makeReal(0.0);
         }
@@ -493,6 +517,30 @@ void VMBuiltins_setVariable(VMContext* ctx, const char* name, RValue val, int32_
     if (strcmp(name, "view_hview") == 0) {
         if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
             runner->currentRoom->views[arrayIndex].viewHeight = RValue_toInt32(val);
+        }
+        return;
+    }
+    if (strcmp(name, "view_xport") == 0) {
+        if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+            runner->currentRoom->views[arrayIndex].portX = RValue_toInt32(val);
+        }
+        return;
+    }
+    if (strcmp(name, "view_yport") == 0) {
+        if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+            runner->currentRoom->views[arrayIndex].portY = RValue_toInt32(val);
+        }
+        return;
+    }
+    if (strcmp(name, "view_wport") == 0) {
+        if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+            runner->currentRoom->views[arrayIndex].portWidth = RValue_toInt32(val);
+        }
+        return;
+    }
+    if (strcmp(name, "view_hport") == 0) {
+        if (arrayIndex >= 0 && MAX_VIEWS > arrayIndex) {
+            runner->currentRoom->views[arrayIndex].portHeight = RValue_toInt32(val);
         }
         return;
     }

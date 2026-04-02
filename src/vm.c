@@ -302,9 +302,9 @@ static ArrayAccess popArrayAccess(VMContext* ctx, uint32_t varRef) {
         RValue stacktop = stackPop(ctx);
         int32_t instanceType = RValue_toInt32(stacktop);
         RValue_free(&stacktop);
-        return (ArrayAccess){ .arrayIndex = -1, .isArray = false, .hasInstanceType = true, .instanceType = instanceType };
+        return (ArrayAccess){ .arrayIndex = -1, .instanceType = instanceType, .isArray = false, .hasInstanceType = true };
     }
-    return (ArrayAccess){ .arrayIndex = -1, .isArray = false, .hasInstanceType = false };
+    return (ArrayAccess){ .arrayIndex = -1, .instanceType = 0, .isArray = false, .hasInstanceType = false };
 }
 
 // ===[ Variable Resolution ]===

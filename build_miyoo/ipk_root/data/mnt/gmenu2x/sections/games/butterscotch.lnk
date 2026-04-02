@@ -1,0 +1,6 @@
+title=Butterscotch
+description=GameMaker Studio runner
+exec=/mnt/games/butterscotch/butterscotch
+selectordir=/mnt/
+selectorbrowser=true
+selectorfilter=.unx,.win

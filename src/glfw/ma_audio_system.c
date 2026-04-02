@@ -6,7 +6,10 @@
 
 // Include stb_vorbis BEFORE miniaudio so that STB_VORBIS_INCLUDE_STB_VORBIS_H is defined,
 // which enables miniaudio's built-in OGG Vorbis decoding support.
-#include "stb_vorbis.c"
+#ifndef STB_VORBIS_INCLUDE_STB_VORBIS_H
+#define STB_VORBIS_IMPLEMENTATION
+#include "../../vendor/stb/vorbis/stb_vorbis.c"
+#endif
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
@@ -75,7 +78,9 @@ static char* resolveExternalPath(MaAudioSystem* ma, Sound* sound) {
         snprintf(filename, sizeof(filename), "%s.ogg", file);
     }
 
-    return ma->fileSystem->vtable->resolvePath(ma->fileSystem, filename);
+    char* resolvedPath = ma->fileSystem->vtable->resolvePath(ma->fileSystem, filename);
+    fprintf(stderr, "Audio: Resolved '%s' -> '%s'\n", file, resolvedPath ? resolvedPath : "NULL");
+    return resolvedPath;
 }
 
 // ===[ Vtable Implementations ]===
@@ -85,17 +90,22 @@ static void maInit(AudioSystem* audio, DataWin* dataWin, FileSystem* fileSystem)
     arrput(ma->base.audioGroups, dataWin);
     ma->fileSystem = fileSystem;
 
+    // Configure miniaudio - use default backend (will auto-select ALSA on Linux)
     ma_engine_config config = ma_engine_config_init();
+    config.sampleRate = 44100;
+    config.channels = 2;
+    
     ma_result result = ma_engine_init(&config, &ma->engine);
     if (result != MA_SUCCESS) {
         fprintf(stderr, "Audio: Failed to initialize miniaudio engine (error %d)\n", result);
         return;
     }
 
+    fprintf(stderr, "Audio: miniaudio engine initialized (sample rate: %u, channels: %u)\n",
+            config.sampleRate, config.channels);
+
     memset(ma->instances, 0, sizeof(ma->instances));
     ma->nextInstanceCounter = 0;
-
-    fprintf(stderr, "Audio: miniaudio engine initialized\n");
 }
 
 static void maDestroy(AudioSystem* audio) {

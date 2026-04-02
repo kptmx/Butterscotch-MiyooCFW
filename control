@@ -1,0 +1,10 @@
+Package: butterscotch
+Version: 1.0.0
+Source: https://github.com/kptmx/Butterscotch
+Section: games
+Maintainer: kptmx
+Architecture: arm
+Installed-Size: 2048
+Description: GameMaker Studio 1.4 runner for Miyoo devices
+ Butterscotch is an open-source implementation of GameMaker:Studio's runner.
+ It allows you to (kinda) play Undertale on MiyooCFW devices.

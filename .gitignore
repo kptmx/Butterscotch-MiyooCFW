@@ -2,6 +2,7 @@
 build/
 build-sdl/
 build-miyoo/
+build_miyoo/
 
 # IPK packages (generated artifacts)
 *.ipk

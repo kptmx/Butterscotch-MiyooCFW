@@ -41,6 +41,7 @@ Renderer* SDLRendererOpt_create(void);
 typedef struct {
     float frameTimeMs;
     int instanceCount;
+    int spritesDrawn;         // количество спрайтов, отрисованных за кадр
     int textureCacheCount;
     int textureCacheCapacity;
     int freeMemoryBytes;
@@ -51,3 +52,15 @@ typedef struct {
 
 // Update debug overlay info (called from main.c each frame)
 void SDLRendererOpt_updateDebugInfo(Renderer* renderer, const SDLDebugInfo* info);
+
+// Toggle debug sprite bounding boxes (call with Renderer*)
+void SDLRendererOpt_toggleDebugBBoxes(Renderer* renderer);
+
+// Toggle debug sprite logging to stderr (call with Renderer*)
+void SDLRendererOpt_toggleDebugLogging(Renderer* renderer);
+
+// Check if debug bboxes are enabled
+bool SDLRendererOpt_isDebugBBoxesEnabled(Renderer* renderer);
+
+// Check if debug logging is enabled
+bool SDLRendererOpt_isDebugLoggingEnabled(Renderer* renderer);

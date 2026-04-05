@@ -645,6 +645,16 @@ int main(int argc, char* argv[]) {
                 runner->vmContext->globalVars[interactVarId] = RValue_makeInt32(0);
                 printf("Changed global.interact [%d] value!\n", interactVarId);
             }
+
+            // Toggle debug sprite bounding boxes: F9
+            if (RunnerKeyboard_checkPressed(runner->keyboard, VK_F9)) {
+                SDLRendererOpt_toggleDebugBBoxes(runner->renderer);
+            }
+
+            // Toggle debug sprite logging: F8
+            if (RunnerKeyboard_checkPressed(runner->keyboard, VK_F8)) {
+                SDLRendererOpt_toggleDebugLogging(runner->renderer);
+            }
         }
 
         // Run the game step

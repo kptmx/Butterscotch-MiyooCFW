@@ -15,6 +15,21 @@
 
 #include "stb_image.h"
 
+// ===[ Debug bounding box storage ]===
+#define MAX_DEBUG_BBOXES 512
+#define MAX_BBOX_LABEL 16
+
+typedef struct {
+    int16_t x, y, w, h;
+    int spriteNum;
+    char label[MAX_BBOX_LABEL];
+} DebugBBox;
+
+typedef struct {
+    DebugBBox boxes[MAX_DEBUG_BBOXES];
+    size_t count;
+} DebugBBoxArray;
+
 // ===[ Константы кэша — оптимизировано для 32 МБ ОЗУ ]===
 #define TEXTURE_CACHE_CAPACITY  64
 #define TEXTURE_CACHE_THRESHOLD 48
@@ -42,8 +57,10 @@ static void drawDebugOverlay(SDL_Surface* screen, const SDLDebugInfo* info) {
     snprintf(lines[lineCount++], sizeof(lines[1]),
              "Instances: %d", info->instanceCount);
     snprintf(lines[lineCount++], sizeof(lines[2]),
-             "Free mem: %d KB", info->freeMemoryBytes / 1024);
+             "Sprites: %d", info->spritesDrawn);
     snprintf(lines[lineCount++], sizeof(lines[3]),
+             "Free mem: %d KB", info->freeMemoryBytes / 1024);
+    snprintf(lines[lineCount++], sizeof(lines[4]),
              "Room: %s (speed: %u)",
              info->roomName ? info->roomName : "unknown", info->roomSpeed);
 
@@ -143,6 +160,34 @@ static inline uint32_t div255fast(uint32_t x) {
     return (x + (x >> 8u) + 1u) >> 8u;
 }
 
+// ===[ Sin/Cos LUT — fixed-point 16.16 для affine rotation ]===
+#define SIN_LUT_SIZE 360
+static int32_t s_sinLUT[SIN_LUT_SIZE];  // sin(deg) * 65536
+static int32_t s_cosLUT[SIN_LUT_SIZE];  // cos(deg) * 65536
+
+static void initTrigLUT(void) {
+    static int initialized = 0;
+    if (initialized) return;
+    for (int i = 0; i < SIN_LUT_SIZE; i++) {
+        float rad = (float)i * 3.14159265358979f / 180.0f;
+        s_sinLUT[i] = (int32_t)(sinf(rad) * 65536.0f);
+        s_cosLUT[i] = (int32_t)(cosf(rad) * 65536.0f);
+    }
+    initialized = 1;
+}
+
+static inline int32_t fastCos32(int deg) {
+    deg %= 360;
+    if (deg < 0) deg += 360;
+    return s_cosLUT[deg];
+}
+
+static inline int32_t fastSin32(int deg) {
+    deg %= 360;
+    if (deg < 0) deg += 360;
+    return s_sinLUT[deg];
+}
+
 // ===[ LUT координат источника — fixed-point 16.16 ]===
 #define SPX_LUT_MAX 2048
 #define SPY_LUT_MAX 2048
@@ -168,6 +213,40 @@ static inline void buildSpyLUT(int count, int sy0, int startDy, int sh, int dstH
     for (int j = 0; j < count; j++) {
         s_spyLUT[j] = sy0 + (accum >> 16);
         accum += step;
+    }
+}
+
+// Integer square root (Newton's method)
+static inline int isqrt(int n) {
+    if (n <= 0) return 0;
+    if (n == 1) return 1;
+    int x = n;
+    int y = (x + n / x) >> 1;
+    while (y < x) { x = y; y = (x + n / x) >> 1; }
+    return x;
+}
+
+// Flip-версия: идёт справа налево (обратное направление для зеркалирования)
+// startDx = 0 → первый пиксель = sx0 + sw - 1 (правый край)
+// startDx = dstW - 1 → первый пиксель = sx0 (левый край)
+static inline void buildSpxLUTFlip(int count, int sx0, int sw, int startDx, int dstW) {
+    if (dstW <= 0) return;
+    int32_t step = (sw << 16) / dstW;
+    // Начальная точка: sx0 + sw - 1 (правый край), минус startDx шагов
+    int32_t accum = (sw << 16) - step - startDx * step;
+    for (int i = 0; i < count; i++) {
+        s_spxLUT[i] = sx0 + (accum >> 16);
+        accum -= step;
+    }
+}
+
+static inline void buildSpyLUTFlip(int count, int sy0, int sh, int startDy, int dstH) {
+    if (dstH <= 0) return;
+    int32_t step = (sh << 16) / dstH;
+    int32_t accum = (sh << 16) - step - startDy * step;
+    for (int j = 0; j < count; j++) {
+        s_spyLUT[j] = sy0 + (accum >> 16);
+        accum -= step;
     }
 }
 
@@ -455,16 +534,142 @@ static bool computeClip(SDL_Surface* dst,
     return true;
 }
 
+// ===[ Affine rotation blit — произвольный угол ]===
+// pivotDstX/Y — позиция origin/pivot в screen coords
+// pivotSrcX/Y — позиция origin внутри srcRect (смещение от srcRect->x/y)
+// scaleX/Y    — screen pixels per src pixel (для обратного маппинга)
+static void blitScaledAlphaAffine(SDL_Surface* src, const SDL_Rect* srcRect,
+                                   SDL_Surface* dst,
+                                   int pivotDstX, int pivotDstY,
+                                   int pivotSrcX, int pivotSrcY,
+                                   float scaleX,  float scaleY,
+                                   uint8_t globalAlpha, int angleDeg)
+{
+    if (!src || !dst || globalAlpha == 0) return;
+    if (scaleX == 0.0f || scaleY == 0.0f) return;
+
+    int sx0 = srcRect ? srcRect->x : 0;
+    int sy0 = srcRect ? srcRect->y : 0;
+    int sw  = srcRect ? srcRect->w : src->w;
+    int sh  = srcRect ? srcRect->h : src->h;
+    if (sw <= 0 || sh <= 0) return;
+
+    // Bounding radius = half-diagonal спрайта в screen-пикселях + запас
+    float halfW = fabsf((float)sw * scaleX) * 0.5f;
+    float halfH = fabsf((float)sh * scaleY) * 0.5f;
+    int radius = (int)sqrtf(halfW * halfW + halfH * halfH) + 2;
+
+    int dstX = pivotDstX - radius;
+    int dstY = pivotDstY - radius;
+    int dstW = radius * 2 + 1;
+    int dstH = radius * 2 + 1;
+
+    int cx1 = dst->clip_rect.x;
+    int cy1 = dst->clip_rect.y;
+    int cx2 = cx1 + (int)dst->clip_rect.w; if (cx2 > dst->w) cx2 = dst->w;
+    int cy2 = cy1 + (int)dst->clip_rect.h; if (cy2 > dst->h) cy2 = dst->h;
+
+    int startX = dstX > cx1 ? dstX : cx1;
+    int startY = dstY > cy1 ? dstY : cy1;
+    int endX   = (dstX + dstW) < cx2 ? (dstX + dstW) : cx2;
+    int endY   = (dstY + dstH) < cy2 ? (dstY + dstH) : cy2;
+    if (startX >= endX || startY >= endY) return;
+
+    int spanW = endX - startX;
+    int spanH = endY - startY;
+
+    // cos/sin угла поворота спрайта (прямой, не обратный)
+    // Обратное преобразование: rotate(-angle) → cos(-a)=cos(a), sin(-a)=-sin(a)
+    int32_t cos16 = fastCos32(angleDeg);
+    int32_t sin16 = fastSin32(angleDeg);
+
+    // Обратный масштаб: src pixels per screen pixel, fixed-point 16.16
+    // rx_src = rx_screen * invScale
+    // invScale_fp16 = round(65536 / scale)
+    float invSX = 1.0f / scaleX;
+    float invSY = 1.0f / scaleY;
+    int32_t invSX_fp16 = (int32_t)(invSX * 65536.0f);
+    int32_t invSY_fp16 = (int32_t)(invSY * 65536.0f);
+
+    int sxMin = sx0,       syMin = sy0;
+    int sxMax = sx0 + sw,  syMax = sy0 + sh;
+
+    SDL_LockSurface(src);
+    SDL_LockSurface(dst);
+
+    // Только 16-бит RGB565 fast path
+    if (src->format->BytesPerPixel == 2 && dst->format->BytesPerPixel == 2) {
+        uint8_t ga    = globalAlpha;
+        uint8_t invGa = 255u - ga;
+
+        for (int j = 0; j < spanH; j++) {
+            int py = startY + j;
+            int dy = py - pivotDstY;
+
+            // Вклад строки в обратное вращение (вычисляем один раз на строку)
+            int32_t dy_cos16 =  (int32_t)dy * cos16;  // dy*cos * 65536
+            int32_t dy_sin16 =  (int32_t)dy * sin16;  // dy*sin * 65536
+
+            uint16_t* dstRow = (uint16_t*)((uint8_t*)dst->pixels + py * dst->pitch);
+
+            for (int i = 0; i < spanW; i++) {
+                int px = startX + i;
+                int dx = px - pivotDstX;
+
+                // Обратное вращение на -angleDeg:
+                //   rx_fp = dx*cos + dy*sin   (смещение в screen пикселях, * 65536)
+                //   ry_fp = -dx*sin + dy*cos
+                int32_t rx_fp = (int32_t)dx * cos16 - dy_sin16;
+                int32_t ry_fp = (int32_t)dx * sin16 + dy_cos16;
+
+                // screen pixels → src pixels (fixed-point 16.16)
+                // rx_screen = rx_fp >> 16
+                // rx_src = rx_screen * invSX = (rx_fp >> 16) * invSX_fp16 >> 16
+                // Упрощаем через 64-bit, чтобы не терять точность:
+                int rx_screen = rx_fp >> 16;
+                int ry_screen = ry_fp >> 16;
+                int sx_rel = (int)((int64_t)rx_screen * invSX_fp16 >> 16);
+                int sy_rel = (int)((int64_t)ry_screen * invSY_fp16 >> 16);
+
+                int sx = sx0 + pivotSrcX + sx_rel;
+                int sy = sy0 + pivotSrcY + sy_rel;
+
+                if (sx < sxMin || sx >= sxMax || sy < syMin || sy >= syMax) continue;
+
+                uint16_t sc = ((const uint16_t*)((const uint8_t*)src->pixels
+                                                 + sy * src->pitch))[sx];
+                if (sc == 0) continue;  // binary alpha
+
+                if (ga == 255) {
+                    dstRow[px] = sc;
+                } else {
+                    uint16_t dc = dstRow[px];
+                    dstRow[px] = R565_PACK(
+                        blend8(R565_SR(sc), R565_R(dc), ga, invGa),
+                        blend8(R565_SG(sc), R565_G(dc), ga, invGa),
+                        blend8(R565_SB(sc), R565_B(dc), ga, invGa));
+                }
+            }
+        }
+    }
+
+    SDL_UnlockSurface(dst);
+    SDL_UnlockSurface(src);
+}
+
 // ===[ Blit со спрайтовым alpha-blend + globalAlpha + rotation ]===
-// rotation: 0=0°, 1=90° CW, 2=180°, 3=270° CW
+// rotation: 0=0°, 1=90° CW, 2=180°, 3=270° CW, 4=произвольный угол (через angleDeg)
 //
 // globalAlpha == 255 → оригинальный fast path без лишних операций
 // globalAlpha == 0   → ранний выход
 // иначе              → sa = div255fast(sa * globalAlpha), затем обычный blend
+// dstW/dstH должны быть положительными — нормализуйте ДО вызова
+// flipX/flipY: 1 = отзеркалить по оси (LUT строится справа налево)
 static void blitScaledAlphaOptimized(SDL_Surface* src, const SDL_Rect* srcRect,
                                       SDL_Surface* dst, int dstX, int dstY,
                                       int dstW, int dstH,
-                                      uint8_t globalAlpha, int rotation)
+                                      uint8_t globalAlpha, int rotation,
+                                      int flipX, int flipY)
 {
     if (!src || !dst || dstW <= 0 || dstH <= 0) return;
     if (globalAlpha == 0) return;
@@ -480,13 +685,35 @@ static void blitScaledAlphaOptimized(SDL_Surface* src, const SDL_Rect* srcRect,
                      &startX, &startY, &endX, &endY, &spanW, &spanH)) return;
     (void)endX; (void)endY;
 
-    // При 90/270 оси повёрнуты: dstX→srcY, dstY→srcX
+    int startDx = startX - dstX;
+    int startDy = startY - dstY;
+
+    // flipX — ЗЕРКАЛИРОВАНИЕ по экранной оси X (отрицательный xscale)
+    // flipY — ЗЕРКАЛИРОВАНИЕ по экранной оси Y (отрицательный yscale)
+    // Для rotation & 1 (90°/270°) оси перепутаны: spxLUT из Y источника, spyLUT из X.
+    // Но flipX всегда инвертирует spxLUT, flipY — spyLUT.
     if (rotation & 1) {
-        buildSpxLUT(spanW, sy0, startX - dstX, sh, dstW);
-        buildSpyLUT(spanH, sx0, startY - dstY, sw, dstH);
+        if (flipX) {
+            buildSpxLUTFlip(spanW, sy0, sh, startDx, dstW);
+        } else {
+            buildSpxLUT(spanW, sy0, startDx, sh, dstW);
+        }
+        if (flipY) {
+            buildSpyLUTFlip(spanH, sx0, sw, startDy, dstH);
+        } else {
+            buildSpyLUT(spanH, sx0, startDy, sw, dstH);
+        }
     } else {
-        buildSpxLUT(spanW, sx0, startX - dstX, sw, dstW);
-        buildSpyLUT(spanH, sy0, startY - dstY, sh, dstH);
+        if (flipX) {
+            buildSpxLUTFlip(spanW, sx0, sw, startDx, dstW);
+        } else {
+            buildSpxLUT(spanW, sx0, startDx, sw, dstW);
+        }
+        if (flipY) {
+            buildSpyLUTFlip(spanH, sy0, sh, startDy, dstH);
+        } else {
+            buildSpyLUT(spanH, sy0, startDy, sh, dstH);
+        }
     }
 
     SDL_LockSurface(src);
@@ -856,11 +1083,14 @@ static void blitScaledThreshold(SDL_Surface* src, const SDL_Rect* srcRect,
 // globalAlpha == 255 → ветка без умножения alpha
 // globalAlpha == 0   → ранний выход
 // иначе              → sa = div255fast(sa * globalAlpha), полный blend
+// dstW/dstH должны быть положительными — нормализуйте ДО вызова
+// flipX/flipY: 1 = отзеркалить по оси (LUT строится справа налево)
 static void blitScaledAlphaOptimizedTint(SDL_Surface* src, const SDL_Rect* srcRect,
                                           SDL_Surface* dst, int dstX, int dstY,
                                           int dstW, int dstH,
                                           uint32_t tintColor,
-                                          uint8_t globalAlpha, int rotation)
+                                          uint8_t globalAlpha, int rotation,
+                                          int flipX, int flipY)
 {
     if (!src || !dst || dstW <= 0 || dstH <= 0) return;
     if (globalAlpha == 0) return;
@@ -881,8 +1111,33 @@ static void blitScaledAlphaOptimizedTint(SDL_Surface* src, const SDL_Rect* srcRe
                      &startX, &startY, &endX, &endY, &spanW, &spanH)) return;
     (void)endX; (void)endY;
 
-    buildSpxLUT(spanW, sx0, startX - dstX, sw, dstW);
-    buildSpyLUT(spanH, sy0, startY - dstY, sh, dstH);
+    int startDx = startX - dstX;
+    int startDy = startY - dstY;
+
+    // flipX всегда инвертирует spxLUT, flipY — spyLUT
+    if (rotation & 1) {
+        if (flipX) {
+            buildSpxLUTFlip(spanW, sy0, sh, startDx, dstW);
+        } else {
+            buildSpxLUT(spanW, sy0, startDx, sh, dstW);
+        }
+        if (flipY) {
+            buildSpyLUTFlip(spanH, sx0, sw, startDy, dstH);
+        } else {
+            buildSpyLUT(spanH, sx0, startDy, sw, dstH);
+        }
+    } else {
+        if (flipX) {
+            buildSpxLUTFlip(spanW, sx0, sw, startDx, dstW);
+        } else {
+            buildSpxLUT(spanW, sx0, startDx, sw, dstW);
+        }
+        if (flipY) {
+            buildSpyLUTFlip(spanH, sy0, sh, startDy, dstH);
+        } else {
+            buildSpyLUT(spanH, sy0, startDy, sh, dstH);
+        }
+    }
 
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
@@ -1123,7 +1378,11 @@ typedef struct {
     FastFmt screenFmt;
     bool    screenFmtReady;
     bool    debugOverlayEnabled;
+    bool    debugSpriteBBoxes;    // рисовать хитбоксы спрайтов
+    bool    debugSpriteLogging;   // логировать вызовы drawSprite
     SDLDebugInfo debugInfo;
+    int     spritesDrawnThisFrame; // счётчик спрайтов за кадр
+    DebugBBoxArray debugBBoxes;    // хитбоксы для отрисовки в endFrame
 } SDLRendererOpt;
 
 // ===[ Loading screen ]===
@@ -1161,6 +1420,13 @@ static void sdlOptInit(Renderer* renderer, DataWin* dataWin) {
     TextureCache_init(&opt->textureCache);
     renderer->dataWin = dataWin;
     opt->screenFmtReady = false;
+    opt->debugOverlayEnabled = false;
+    opt->debugSpriteBBoxes = false;
+    opt->debugSpriteLogging = false;
+    opt->spritesDrawnThisFrame = 0;
+    opt->debugBBoxes.count = 0;
+
+    initTrigLUT();
 
     int ttfResult = TTF_Init();
     fprintf(stderr, "SDL-OPT: TTF_Init() returned %d\n", ttfResult);
@@ -1244,6 +1510,9 @@ static void sdlOptBeginFrame(Renderer* renderer,
         opt->screenFmtReady = true;
     }
 
+    // Reset per-frame sprite counter
+    opt->spritesDrawnThisFrame = 0;
+
     SDL_SetClipRect(sdl->screen, NULL);
     SDL_FillRect(sdl->screen, NULL,
                  SDL_MapRGB(sdl->screen->format, 0, 0, 0));
@@ -1257,6 +1526,56 @@ static void sdlOptEndFrame(Renderer* renderer) {
     // Update cache count in debug info
     opt->debugInfo.textureCacheCount = (int)opt->textureCache.count;
     opt->debugInfo.textureCacheCapacity = TEXTURE_CACHE_CAPACITY;
+    opt->debugInfo.spritesDrawn = opt->spritesDrawnThisFrame;
+
+    // Debug sprite bounding boxes (drawn before overlay text)
+    if (opt->debugSpriteBBoxes && opt->debugBBoxes.count > 0) {
+        uint32_t bboxColor = SDL_MapRGB(sdl->screen->format, 255, 0, 255); // magenta
+        uint32_t bgColor   = SDL_MapRGB(sdl->screen->format, 0, 0, 0);
+        uint32_t textColor = SDL_MapRGB(sdl->screen->format, 255, 255, 255);
+
+        for (size_t i = 0; i < opt->debugBBoxes.count; i++) {
+            DebugBBox* bbox = &opt->debugBBoxes.boxes[i];
+            SDL_Rect rect = { bbox->x, bbox->y, bbox->w, bbox->h };
+            // Draw outline (4 edges)
+            SDL_Rect top    = { rect.x, rect.y, rect.w, 1 };
+            SDL_Rect bottom = { rect.x, rect.y + rect.h - 1, rect.w, 1 };
+            SDL_Rect left   = { rect.x, rect.y, 1, rect.h };
+            SDL_Rect right  = { rect.x + rect.w - 1, rect.y, 1, rect.h };
+            SDL_FillRect(sdl->screen, &top, bboxColor);
+            SDL_FillRect(sdl->screen, &bottom, bboxColor);
+            SDL_FillRect(sdl->screen, &left, bboxColor);
+            SDL_FillRect(sdl->screen, &right, bboxColor);
+
+            // Draw sprite number label
+            if (g_loadingFont && bbox->label[0]) {
+                SDL_Color labelColor = { 255, 255, 255, 255 };
+                SDL_Surface* textSurf = TTF_RenderText_Blended(g_loadingFont, bbox->label, labelColor);
+                if (textSurf) {
+                    // Label at top-left corner of bbox, with black background
+                    int lx = rect.x + 1;
+                    int ly = rect.y + 1;
+                    if (lx + textSurf->w > rect.x + rect.w) lx = rect.x + rect.w - textSurf->w;
+                    if (ly + textSurf->h > rect.y + rect.h) ly = rect.y + rect.h - textSurf->h;
+
+                    // Black background behind text
+                    SDL_Rect bg = { lx, ly, (Uint16)textSurf->w, (Uint16)textSurf->h };
+                    SDL_FillRect(sdl->screen, &bg, bgColor);
+                    SDL_BlitSurface(textSurf, NULL, sdl->screen, &(SDL_Rect){lx, ly, 0, 0});
+                    SDL_FreeSurface(textSurf);
+                }
+            }
+
+            // Color label: yellow for rects (tpag=-1), magenta for sprites
+            uint32_t labelColor2 = (bbox->spriteNum < 0)
+                ? SDL_MapRGB(sdl->screen->format, 255, 255, 0)  // yellow = rect/line
+                : bboxColor;
+            SDL_Rect dot = { rect.x, rect.y, 2, 2 };
+            SDL_FillRect(sdl->screen, &dot, labelColor2);
+        }
+        // Reset bbox count for next frame
+        opt->debugBBoxes.count = 0;
+    }
 
     // Debug overlay (always shown when debugMode is enabled)
     if (renderer->dataWin && opt->debugOverlayEnabled) {
@@ -1320,6 +1639,34 @@ static SDL_Surface* getTPAGSurface(SDLRendererOpt* opt, DataWin* dw,
     return TextureCache_getSurface(entry, &opt->base);
 }
 
+// ===[ Debug helper: record sprite bbox ]===
+static void recordSpriteBBox(SDLRendererOpt* opt, int x, int y, int w, int h,
+                              int32_t tpagIndex, float alpha,
+                              float angleDeg, float xscale, float yscale)
+{
+    // Increment sprite counter
+    opt->spritesDrawnThisFrame++;
+
+    // Record bbox for rendering in endFrame
+    if (opt->debugSpriteBBoxes && opt->debugBBoxes.count < MAX_DEBUG_BBOXES) {
+        DebugBBox* bbox = &opt->debugBBoxes.boxes[opt->debugBBoxes.count];
+        bbox->x = (int16_t)x;
+        bbox->y = (int16_t)y;
+        bbox->w = (int16_t)w;
+        bbox->h = (int16_t)h;
+        bbox->spriteNum = opt->spritesDrawnThisFrame;
+        snprintf(bbox->label, MAX_BBOX_LABEL, "%d", opt->spritesDrawnThisFrame);
+        opt->debugBBoxes.count++;
+    }
+
+    // Log sprite draw call
+    if (opt->debugSpriteLogging) {
+        fprintf(stderr, "[SPRITE #%d] tpag=%d pos=(%d,%d) size=(%dx%d) angle=%.0f scale=(%.2f,%.2f) alpha=%.2f\n",
+                opt->spritesDrawnThisFrame, tpagIndex, x, y, w, h,
+                angleDeg, xscale, yscale, alpha);
+    }
+}
+
 // ===[ Vtable: drawSpritePart ]===
 static void sdlOptDrawSpritePart(Renderer* renderer,
                                   int32_t tpagIndex,
@@ -1353,12 +1700,24 @@ static void sdlOptDrawSpritePart(Renderer* renderer,
     int dstW = (int)scaleW(sdl, (float)srcW * xscale);
     int dstH = (int)scaleH(sdl, (float)srcH * yscale);
 
+    // Нормализуем отрицательные размеры (зеркалирование по осям)
+    // Позиция сдвигается на отрицательный размер, размер берётся по модулю
+    int flipX = 0, flipY = 0;
+    if (dstW < 0) { bx += dstW; dstW = -dstW; flipX = 1; }
+    if (dstH < 0) { by += dstH; dstH = -dstH; flipY = 1; }
+
+    // Debug: record bbox (абсолютные значения)
+    recordSpriteBBox(opt, (int)bx, (int)by, dstW, dstH, tpagIndex, alpha,
+                      0.0f, xscale, yscale);
+
     if (needsTint) {
         blitScaledAlphaOptimizedTint(src, &srcRect, sdl->screen,
-                                      (int)bx, (int)by, dstW, dstH, color, ga, 0);
+                                      (int)bx, (int)by, dstW, dstH, color, ga, 0,
+                                      flipX, flipY);
     } else {
         blitScaledAlphaOptimized(src, &srcRect, sdl->screen,
-                                  (int)bx, (int)by, dstW, dstH, ga, 0);
+                                  (int)bx, (int)by, dstW, dstH, ga, 0,
+                                  flipX, flipY);
     }
 }
 
@@ -1379,26 +1738,38 @@ static void sdlOptDrawSprite(Renderer* renderer,
     SDL_Surface* src = getTPAGSurface(opt, dw, tpagIndex, &tpag);
     if (!src) return;
 
-    // Нормализуем угол к 0/90/180/270
-    int rotation = 0;
-    if (angleDeg != 0.0f) {
-        int deg = (int)(angleDeg + 360) % 360;
-        if (deg < 45 || deg >= 315) rotation = 0;
-        else if (deg >= 45 && deg < 135) rotation = 1;  // 90
-        else if (deg >= 135 && deg < 225) rotation = 2; // 180
-        else rotation = 3;                               // 270
-    }
-
     int srcW = tpag->sourceWidth;
     int srcH = tpag->sourceHeight;
 
-    // Для 90/270 ширина и высота меняются местами
-    // xscale применяется к высоте (бывшая X ось → экранная Y)
-    // yscale применяется к ширине (бывшая Y ось → экранная X)
+    // Нормализуем угол: 0/90/180/270 — быстрый путь, остальные — affine
+    int rotation = 0;
+    int useAffine = 0;
+    int angleInt = (int)angleDeg;
+    if (angleInt != 0) {
+        angleInt = (angleInt % 360 + 360) % 360;
+        if (angleInt == 90)      rotation = 1;
+        else if (angleInt == 180) rotation = 2;
+        else if (angleInt == 270) rotation = 3;
+        else                      useAffine = 1;
+    }
+
     int dstW, dstH;
     if (rotation & 1) {
+        // 90/270: оси перепутаны
         dstW = (int)scaleW(sdl, (float)srcH * xscale);
         dstH = (int)scaleH(sdl, (float)srcW * yscale);
+    } else if (useAffine) {
+        // Affine: bounding box через sin/cos
+        int32_t cos16 = fastCos32(angleInt);
+        int32_t sin16 = fastSin32(angleInt);
+        int32_t acos = cos16 < 0 ? -cos16 : cos16;
+        int32_t asin = sin16 < 0 ? -sin16 : sin16;
+        float swF = (float)srcW * xscale;
+        float shF = (float)srcH * yscale;
+        float bboxW = (swF * acos + shF * asin) / 65536.0f;
+        float bboxH = (swF * asin + shF * acos) / 65536.0f;
+        dstW = (int)scaleW(sdl, bboxW);
+        dstH = (int)scaleH(sdl, bboxH);
     } else {
         dstW = (int)scaleW(sdl, (float)srcW * xscale);
         dstH = (int)scaleH(sdl, (float)srcH * yscale);
@@ -1412,6 +1783,12 @@ static void sdlOptDrawSprite(Renderer* renderer,
         viewToScreen(sdl,
                      x + ((float)tpag->targetX - originY) * xscale,
                      y + ((float)tpag->targetY - originX) * yscale,
+                     &bx, &by);
+    } else if (useAffine) {
+        // Для affine rotation позиция = центр спрайта
+        viewToScreen(sdl,
+                     x + ((float)tpag->targetX - originX) * xscale,
+                     y + ((float)tpag->targetY - originY) * yscale,
                      &bx, &by);
     } else {
         viewToScreen(sdl,
@@ -1427,18 +1804,44 @@ static void sdlOptDrawSprite(Renderer* renderer,
     uint8_t tintB = BGR_B(color);
     bool needsTint = (tintR != 255 || tintG != 255 || tintB != 255);
 
-    // Для 180° — смещаем точку привязки
-    if (rotation == 2) {
-        bx -= dstW;
-        by -= dstH;
-    }
+    // Нормализуем отрицательные размеры (зеркалирование по осям)
+    int flipX = 0, flipY = 0;
+    if (dstW < 0) { bx += dstW; dstW = -dstW; flipX = 1; }
+    if (dstH < 0) { by += dstH; dstH = -dstH; flipY = 1; }
 
-    if (needsTint) {
+        if (useAffine) {
+        // Pivot (origin спрайта) на экране — точка вращения
+        float pivotScreenX, pivotScreenY;
+        viewToScreen(sdl, x, y, &pivotScreenX, &pivotScreenY);
+
+        // Origin внутри src rect (смещение от левого-верхнего угла srcRect)
+        int pivotSrcX = (int)originX - tpag->targetX;
+        int pivotSrcY = (int)originY - tpag->targetY;
+
+        // Масштаб: screen pixels / src pixel
+        // = game scale * view→port * game→window
+        float screenScaleX = xscale * sdl->viewToPortX * sdl->gameToWindowX;
+        float screenScaleY = yscale * sdl->viewToPortY * sdl->gameToWindowY;
+
+        // Debug: приблизительный bbox вокруг pivot
+        recordSpriteBBox(opt,
+                         (int)pivotScreenX - dstW / 2,
+                         (int)pivotScreenY - dstH / 2,
+                         dstW, dstH, tpagIndex, alpha, angleDeg, xscale, yscale);
+
+        blitScaledAlphaAffine(src, &srcRect, sdl->screen,
+                               (int)pivotScreenX, (int)pivotScreenY,
+                               pivotSrcX, pivotSrcY,
+                               screenScaleX, screenScaleY,
+                               ga, angleInt);
+    } else if (needsTint) {
         blitScaledAlphaOptimizedTint(src, &srcRect, sdl->screen,
-                                      (int)bx, (int)by, dstW, dstH, color, ga, rotation);
+                                      (int)bx, (int)by, dstW, dstH, color, ga, rotation,
+                                      flipX, flipY);
     } else {
         blitScaledAlphaOptimized(src, &srcRect, sdl->screen,
-                                  (int)bx, (int)by, dstW, dstH, ga, rotation);
+                                  (int)bx, (int)by, dstW, dstH, ga, rotation,
+                                  flipX, flipY);
     }
 }
 
@@ -1462,8 +1865,25 @@ static void sdlOptDrawRectangle(Renderer* renderer,
     if (X2 <= X1) X2 = X1 + 1;
     if (Y2 <= Y1) Y2 = Y1 + 1;
 
+    // Debug: log thin rectangles (likely lines/bars)
+    if (opt->debugSpriteLogging) {
+        int w = X2 - X1, h = Y2 - Y1;
+        const char* type = outline ? "OUTLINE" : (w <= 2 || h <= 2) ? "LINE" : "FILLED";
+        uint8_t r = BGR_R(color), g = BGR_G(color), b = BGR_B(color);
+        fprintf(stderr, "[RECT %s] game=(%.0f,%.0f)-(%.0f,%.0f) screen=(%d,%d)-(%d,%d) size=%dx%d color=(%d,%d,%d)\n",
+                type, x1, y1, x2, y2, X1, Y1, X2, Y2, w, h, r, g, b);
+    }
+
+    // Debug: record bbox for thin rects
+    if (opt->debugSpriteBBoxes) {
+        int w = X2 - X1, h = Y2 - Y1;
+        if (w <= 4 || h <= 4) {
+            recordSpriteBBox(opt, X1, Y1, w, h, -1, 1.0f, 0.0f, 1.0f, 1.0f);
+        }
+    }
+
     uint32_t c = SDL_MapRGB(sdl->screen->format,
-                            BGR_B(color), BGR_G(color), BGR_R(color));
+                            BGR_R(color), BGR_G(color), BGR_B(color));
     if (outline) {
         int w = X2 - X1, h = Y2 - Y1;
         SDL_Rect edges[4] = {
@@ -1484,13 +1904,127 @@ static void sdlOptDrawLine(Renderer* renderer,
                             float x1, float y1, float x2, float y2,
                             float width, uint32_t color, float alpha)
 {
-    (void)width;
     SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
-    SDLRenderer* sdl = &opt->base;
-    float bx1, by1, bx2, by2;
-    viewToScreen(sdl, x1, y1, &bx1, &by1);
-    viewToScreen(sdl, x2, y2, &bx2, &by2);
-    sdlOptDrawRectangle(renderer, bx1, by1, bx2, by2, color, alpha, false);
+    SDLRenderer*    sdl = &opt->base;
+    (void)alpha;
+
+    // --- единственное место с float: конвертируем в 16.16 ---
+    float sx1f, sy1f, sx2f, sy2f;
+    viewToScreen(sdl, x1, y1, &sx1f, &sy1f);
+    viewToScreen(sdl, x2, y2, &sx2f, &sy2f);
+
+    int32_t bx1 = (int32_t)(sx1f * 65536.f);
+    int32_t by1 = (int32_t)(sy1f * 65536.f);
+    int32_t bx2 = (int32_t)(sx2f * 65536.f);
+    int32_t by2 = (int32_t)(sy2f * 65536.f);
+
+    float scaledWf = scaleW(sdl, width);
+    if (scaledWf < 1.f) scaledWf = 1.f;
+    // halfW в 16.16, минимум 0.5px
+    int32_t halfW_fp = (int32_t)(scaledWf * 32768.f); // * 0.5 * 65536
+    if (halfW_fp < 0x8000) halfW_fp = 0x8000;
+    // --- дальше только целые числа ---
+
+    uint32_t c = SDL_MapRGB(sdl->screen->format,
+                             BGR_R(color), BGR_G(color), BGR_B(color));
+
+    const SDL_Rect* cr = &sdl->screen->clip_rect;
+    int cxMin = cr->x;
+    int cyMin = cr->y;
+    int cxMax = cr->x + (int)cr->w; if (cxMax > sdl->screen->w) cxMax = sdl->screen->w;
+    int cyMax = cr->y + (int)cr->h; if (cyMax > sdl->screen->h) cyMax = sdl->screen->h;
+
+    // dx/dy в целых пикселях (сдвиг из 16.16)
+    int32_t dxi = (bx2 - bx1) >> 16;
+    int32_t dyi = (by2 - by1) >> 16;
+    uint32_t len = isqrt((uint32_t)(dxi*dxi + dyi*dyi));
+
+    if (len == 0) {
+        // Точка — квадрат вокруг позиции
+        int hw = halfW_fp >> 16;
+        int X1 = (bx1 >> 16) - hw,    Y1 = (by1 >> 16) - hw;
+        int X2 = (bx1 >> 16) + hw + 1, Y2 = (by1 >> 16) + hw + 1;
+        if (X1 < cxMin) X1 = cxMin; if (Y1 < cyMin) Y1 = cyMin;
+        if (X2 > cxMax) X2 = cxMax; if (Y2 > cyMax) Y2 = cyMax;
+        if (X2 > X1 && Y2 > Y1) {
+            SDL_Rect r = { X1, Y1, X2-X1, Y2-Y1 };
+            SDL_FillRect(sdl->screen, &r, c);
+        }
+        return;
+    }
+
+    // Перпендикулярный вектор длиной halfW (результат в 16.16)
+    // px = -dyi * halfW / len,  py = dxi * halfW / len
+    // int64 чтобы не переполнить: dyi(~1000) * halfW_fp(~65536*50) = ~3.2e9
+    int32_t px_fp = (int32_t)(((int64_t)(-dyi) * halfW_fp) / (int32_t)len);
+    int32_t py_fp = (int32_t)(((int64_t)( dxi) * halfW_fp) / (int32_t)len);
+
+    // 4 вершины параллелограмма в 16.16
+    int32_t vx[4] = { bx1 + px_fp, bx1 - px_fp, bx2 - px_fp, bx2 + px_fp };
+    int32_t vy[4] = { by1 + py_fp, by1 - py_fp, by2 - py_fp, by2 + py_fp };
+
+    // Y-диапазон сканлайнов
+    int32_t yMinFp = vy[0], yMaxFp = vy[0];
+    for (int i = 1; i < 4; i++) {
+        if (vy[i] < yMinFp) yMinFp = vy[i];
+        if (vy[i] > yMaxFp) yMaxFp = vy[i];
+    }
+    int yStart = yMinFp >> 16;
+    int yEnd   = (yMaxFp >> 16) + 1;
+    if (yStart < cyMin) yStart = cyMin;
+    if (yEnd   > cyMax) yEnd   = cyMax;
+    if (yStart >= yEnd) return;
+
+    if (SDL_MUSTLOCK(sdl->screen)) SDL_LockSurface(sdl->screen);
+
+    int bpp = sdl->screen->format->BytesPerPixel;
+
+    for (int y = yStart; y < yEnd; y++) {
+        // Центр строки в 16.16
+        int32_t fy_fp = (y << 16) + 0x8000;
+
+        int32_t xL =  0x7FFFFFFF;
+        int32_t xR = -0x7FFFFFFF;
+
+        for (int e = 0; e < 4; e++) {
+            int     ne  = (e + 1) & 3;
+            int32_t ey0 = vy[e], ey1 = vy[ne];
+            int32_t ex0 = vx[e], ex1 = vx[ne];
+
+            // Сканлайн пересекает ребро, если вершины по разные стороны
+            if ((fy_fp >= ey0) == (fy_fp >= ey1)) continue;
+
+            // xi = ex0 + (fy - ey0) * (ex1 - ex0) / (ey1 - ey0)
+            // всё в 16.16, используем int64 для промежуточного результата
+            int32_t xi_fp = ex0 + (int32_t)(
+                (int64_t)(fy_fp - ey0) * (ex1 - ex0) / (ey1 - ey0));
+
+            if (xi_fp < xL) xL = xi_fp;
+            if (xi_fp > xR) xR = xi_fp;
+        }
+
+        if (xL > xR) continue;
+
+        int xS = xL >> 16;
+        int xE = (xR >> 16) + 1;
+        if (xS < cxMin) xS = cxMin;
+        if (xE > cxMax) xE = cxMax;
+        if (xS >= xE) continue;
+
+        uint8_t* row = (uint8_t*)sdl->screen->pixels + y * sdl->screen->pitch;
+        if (bpp == 2) {
+            uint16_t* p = (uint16_t*)row + xS;
+            uint16_t c16 = (uint16_t)c;
+            int n = xE - xS;
+            while (n--) *p++ = c16;
+        } else if (bpp == 4) {
+            uint32_t* p = (uint32_t*)row + xS;
+            int n = xE - xS;
+            while (n--) *p++ = c;
+        }
+    }
+
+    if (SDL_MUSTLOCK(sdl->screen)) SDL_UnlockSurface(sdl->screen);
 }
 
 // ===[ Vtable: drawLineColor ]===
@@ -1803,6 +2337,31 @@ static RendererVtable sdlOptVtable = {
     .drawTile                = sdlOptDrawTile,
 };
 #endif
+
+// ===[ Debug toggle helpers ]===
+void SDLRendererOpt_toggleDebugBBoxes(Renderer* renderer) {
+    if (!renderer) return;
+    SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
+    opt->debugSpriteBBoxes = !opt->debugSpriteBBoxes;
+    fprintf(stderr, "Debug sprite bboxes: %s\n", opt->debugSpriteBBoxes ? "ON" : "OFF");
+}
+
+void SDLRendererOpt_toggleDebugLogging(Renderer* renderer) {
+    if (!renderer) return;
+    SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
+    opt->debugSpriteLogging = !opt->debugSpriteLogging;
+    fprintf(stderr, "Debug sprite logging: %s\n", opt->debugSpriteLogging ? "ON" : "OFF");
+}
+
+bool SDLRendererOpt_isDebugBBoxesEnabled(Renderer* renderer) {
+    if (!renderer) return false;
+    return ((SDLRendererOpt*)renderer)->debugSpriteBBoxes;
+}
+
+bool SDLRendererOpt_isDebugLoggingEnabled(Renderer* renderer) {
+    if (!renderer) return false;
+    return ((SDLRendererOpt*)renderer)->debugSpriteLogging;
+}
 
 // ===[ Public constructor ]===
 Renderer* SDLRendererOpt_create(void)

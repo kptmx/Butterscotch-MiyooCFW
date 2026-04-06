@@ -17,17 +17,21 @@ jobs:
         with:
           submodules: true
 
+      - name: Get version
+        id: version
+        run: echo "version=$(grep 'BUTTERSCOTCH_VERSION' CMakeLists.txt | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+
       - name: Install cmake
         run: apt-get update && apt-get install -y --no-install-recommends cmake
 
       - name: Get commit info
         id: commit-info
         run: |
-          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "date=$(git log -1 --format=%cd --date=short)" >> $GITHUB_OUTPUT
+          echo "hash=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "date=$(git log -1 --format=%cd --date=short || date +%F)" >> $GITHUB_OUTPUT
 
       - name: Configure
-        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}"
+        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}" "-DBUTTERSCOTCH_VERSION=${{ steps.version.outputs.version }}"
 
       - name: Build
         run: cmake --build build_miyoo -j$(nproc)
@@ -45,7 +49,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: butterscotch-miyoo-uclibc-ipk
-          path: build_miyoo/butterscotch-${{ steps.commit-info.outputs.hash }}_arm.ipk
+          path: build_miyoo/butterscotch_${{ steps.version.outputs.version }}_arm.ipk
 
   build-miyoo-musl:
     name: Build (Miyoo/musl)
@@ -57,17 +61,21 @@ jobs:
         with:
           submodules: true
 
+      - name: Get version
+        id: version
+        run: echo "version=$(grep 'BUTTERSCOTCH_VERSION' CMakeLists.txt | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+
       - name: Install cmake
         run: apt-get update && apt-get install -y --no-install-recommends cmake
 
       - name: Get commit info
         id: commit-info
         run: |
-          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "date=$(git log -1 --format=%cd --date=short)" >> $GITHUB_OUTPUT
+          echo "hash=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "date=$(git log -1 --format=%cd --date=short || date +%F)" >> $GITHUB_OUTPUT
 
       - name: Configure
-        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}"
+        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}" "-DBUTTERSCOTCH_VERSION=${{ steps.version.outputs.version }}"
 
       - name: Build
         run: cmake --build build_miyoo -j$(nproc)
@@ -85,4 +93,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: butterscotch-miyoo-musl-ipk
-          path: build_miyoo/butterscotch-${{ steps.commit-info.outputs.hash }}_arm.ipk
+          path: build_miyoo/butterscotch_${{ steps.version.outputs.version }}_arm.ipk

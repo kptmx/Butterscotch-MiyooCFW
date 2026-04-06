@@ -2,6 +2,7 @@
 #include "vm.h"
 
 #include <SDL/SDL.h>
+#include <SDL/SDL_ttf.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,11 +20,16 @@
 #include "sdl_renderer.h"
 #include "sdl_file_system.h"
 
-#if defined(NO_AUDIO) || defined(MIYOO_NO_AUDIO)
 #include "noop_audio_system.h"
+#if defined(NO_AUDIO) || defined(MIYOO_NO_AUDIO)
+/* Noop audio only */
 #else
-#include "../glfw/ma_audio_system.h"
+#include "ma_tremor_audio.h"
 #endif
+#include "debug_menu.h"
+
+// External: loading font from renderer
+extern TTF_Font* SDLRendererOpt_getLoadingFont(void);
 
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
@@ -260,22 +266,21 @@ static int32_t sdlKeyToGml(SDLKey key) {
     }
     
 #ifdef MIYOO_KEYBINDINGS
-    // Miyoo CFW 2.0.0+ specific bindings
-    // Map physical buttons to Undertale's expected key codes
-    // Undertale uses: Z=confirm, X=cancel, C=menu, Shift=run, Enter=interact
+    // Miyoo CFW 2.0.0+ specific bindings — each button unique
     switch (key) {
-        case SDLK_LALT:          return 'Z';  // A button -> Z (confirm)
-        case SDLK_LCTRL:         return 'X';  // B button -> X (cancel)
-        case SDLK_LSHIFT:        return 'C';  // X button -> C (menu)
-        case SDLK_SPACE:         return 'Y';  // Y button -> Y (unused)
-        case SDLK_TAB:           return VK_SHIFT; // L1 -> Shift (run)
-        case SDLK_BACKSPACE:     return VK_SHIFT; // R1 -> Shift
-        case SDLK_PAGEUP:        return VK_CONTROL; // L2 -> Control
-        case SDLK_PAGEDOWN:      return VK_CONTROL; // R2 -> Control
-        case SDLK_RALT:          return VK_ALT;   // L3 -> Alt
-        case SDLK_RSHIFT:        return VK_ESCAPE; // R3 -> ESC
-        case SDLK_RCTRL:         return VK_ESCAPE; // RESET -> ESC
-        case SDLK_ESCAPE:        return VK_ESCAPE; // SELECT -> ESC (exit game)
+        case SDLK_LALT:          return 'Z';       // A button
+        case SDLK_LCTRL:         return 'X';       // B button
+        case SDLK_LSHIFT:        return 'C';       // X button
+        case SDLK_SPACE:         return 'V';       // Y button
+        case SDLK_ESCAPE:        return VK_ESCAPE; // SELECT (exit game)
+        case SDLK_RETURN:        return VK_ENTER;  // START
+        case SDLK_RCTRL:         return VK_F2;     // RESET (debug menu toggle)
+        case SDLK_RALT:          return VK_F3;     // L3
+        case SDLK_RSHIFT:        return VK_F4;     // R3
+        case SDLK_TAB:           return VK_PAGEUP; // L1
+        case SDLK_BACKSPACE:     return VK_PAGEDOWN; // R1
+        case SDLK_PAGEUP:        return VK_TAB;    // L2
+        case SDLK_PAGEDOWN:      return VK_BACKSPACE; // R2
         default: break;
     }
 #endif
@@ -325,6 +330,7 @@ static InputRecording* globalInputRecording = nullptr;
 int main(int argc, char* argv[]) {
     CommandLineArgs args;
     parseCommandLineArgs(&args, argc, argv);
+    printf("Hi! :3\n");
 
     printf("Loading %s...\n", args.dataWinPath);
 
@@ -447,6 +453,9 @@ int main(int argc, char* argv[]) {
     // Initialize the runner
     Runner* runner = Runner_create(dataWin, vm, sdlFileSystem);
     runner->debugMode = args.debug;
+    if (args.debug) {
+        SDLRendererOpt_toggleDebugOverlay(runner->renderer);
+    }
 
     // Set up input recording/playback
     if (args.playbackInputsPath != nullptr) {
@@ -504,17 +513,68 @@ int main(int argc, char* argv[]) {
     runner->renderer = renderer;
 
     // Initialize audio system
-#if defined(NO_AUDIO) || defined(MIYOO_NO_AUDIO)
-    // Audio disabled at compile time or Miyoo NOOP audio
-    NoopAudioSystem* noopAudio = NoopAudioSystem_create();
-    AudioSystem* audioSystem = (AudioSystem*) noopAudio;
+    AudioSystem* audioSystem;
+
+    // Track F2 debounce to prevent menu re-opening immediately
+    static bool s_f2PrevState = false;
+
+    // Ask user about audio (GUI prompt)
+#if !defined(NO_AUDIO) && !defined(MIYOO_NO_AUDIO)
+    {
+        bool audioPromptDone = false;
+        bool enableAudio = true; // default to yes
+
+        // Clear screen
+        SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, 0, 0, 0));
+
+        // Draw prompt using SDL_ttf
+        SDL_Surface* surface = TTF_RenderText_Blended(
+            SDLRendererOpt_getLoadingFont(),
+            "Enable audio?  A=Yes  B=No",
+            (SDL_Color){200, 200, 200});
+        if (surface) {
+            SDL_Rect dst = { (screen->w - surface->w) / 2, (screen->h - surface->h) / 2, 0, 0 };
+            SDL_BlitSurface(surface, NULL, screen, &dst);
+            SDL_FreeSurface(surface);
+        }
+        SDL_Flip(screen);
+
+        // Wait for A (LALT) or B (LCTRL)
+        while (!audioPromptDone) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_KEYDOWN) {
+                    if (ev.key.keysym.sym == SDLK_LALT) {
+                        enableAudio = true;
+                        audioPromptDone = true;
+                    } else if (ev.key.keysym.sym == SDLK_LCTRL) {
+                        enableAudio = false;
+                        audioPromptDone = true;
+                    }
+                }
+            }
+            SDL_Delay(10);
+        }
+
+        // Initialize audio system based on choice
+        if (enableAudio) {
+            MaTremorAudioSystem* maAudio = MaTremorAudioSystem_create();
+            audioSystem = (AudioSystem*) maAudio;
+        } else {
+            NoopAudioSystem* noopAudio = NoopAudioSystem_create();
+            audioSystem = (AudioSystem*) noopAudio;
+        }
+        audioSystem->vtable->init(audioSystem, dataWin, sdlFileSystem);
+        runner->audioSystem = audioSystem;
+    }
 #else
-    // SDL/Miyoo uses miniaudio for audio
-    MaAudioSystem* maAudio = MaAudioSystem_create();
-    AudioSystem* audioSystem = (AudioSystem*) maAudio;
+    {
+        NoopAudioSystem* noopAudio = NoopAudioSystem_create();
+        audioSystem = (AudioSystem*) noopAudio;
+        audioSystem->vtable->init(audioSystem, dataWin, sdlFileSystem);
+        runner->audioSystem = audioSystem;
+    }
 #endif
-    audioSystem->vtable->init(audioSystem, dataWin, sdlFileSystem);
-    runner->audioSystem = audioSystem;
 
     // Initialize the first room
     Runner_initFirstRoom(runner);
@@ -563,6 +623,23 @@ int main(int argc, char* argv[]) {
 
         // Debug key bindings
         if (runner->debugMode) {
+            // Toggle debug menu: F2 (PC) or RESET (Miyoo RCTRL → F2)
+            // Use debounce to prevent re-triggering from same press
+            bool f2Now = RunnerKeyboard_checkPressed(runner->keyboard, VK_F2);
+            if (f2Now && !s_f2PrevState) {
+                if (!g_debugMenu.visible) {
+                    DebugMenu_toggle(runner->renderer, runner);
+                } else {
+                    g_debugMenu.visible = false;
+                }
+            }
+            s_f2PrevState = f2Now;
+
+            // Debug menu processing (consumes input while open)
+            if (g_debugMenu.visible) {
+                DebugMenu_process(runner->renderer, runner);
+            }
+
             // Pause/resume: P (keyboard) or SELECT+START (Miyoo)
             if (RunnerKeyboard_checkPressed(runner->keyboard, 'P')
 #ifdef MIYOO_KEYBINDINGS
@@ -678,6 +755,16 @@ int main(int argc, char* argv[]) {
 
             // Run one game step
             Runner_step(runner);
+
+            // Update audio system (gain fading, cleanup ended sounds)
+            // Skip if frame took too long — graphics has priority over audio maintenance
+            uint32_t stepTime = SDL_GetTicks() - frameStartTime;
+            if (stepTime < 33) {
+                float dt = (float)(SDL_GetTicks() - lastFrameTime) / 1000.0f;
+                if (dt < 0.0f) dt = 0.0f;
+                if (dt > 0.1f) dt = 0.1f; // cap delta to avoid huge fades on lag spikes
+                audioSystem->vtable->update(audioSystem, dt);
+            }
 
             // Dump full runner state if requested
             if (hmget(args.dumpFrames, runner->frameCount)) {

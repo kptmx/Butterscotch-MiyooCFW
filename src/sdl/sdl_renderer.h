@@ -2,6 +2,7 @@
 
 #include "renderer.h"
 #include <SDL/SDL.h>
+#include <SDL/SDL_ttf.h>
 #include <stdint.h>
 
 typedef struct {
@@ -64,3 +65,10 @@ bool SDLRendererOpt_isDebugBBoxesEnabled(Renderer* renderer);
 
 // Check if debug logging is enabled
 bool SDLRendererOpt_isDebugLoggingEnabled(Renderer* renderer);
+
+// Get the loading font (for debug menu and overlays)
+TTF_Font* SDLRendererOpt_getLoadingFont(void);
+
+// Toggle debug overlay (call from debug menu)
+void SDLRendererOpt_toggleDebugOverlay(Renderer* renderer);
+bool SDLRendererOpt_isDebugOverlayEnabled(Renderer* renderer);

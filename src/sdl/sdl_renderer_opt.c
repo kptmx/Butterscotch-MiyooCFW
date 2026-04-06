@@ -4,6 +4,7 @@
 #include "matrix_math.h"
 #include "utils.h"
 #include "renderer.h"
+#include "debug_menu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,14 @@
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_ttf.h>
+#include <time.h>
+
+// High-resolution timing helpers (microsecond resolution)
+static inline uint64_t tickUs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
 
 #include "stb_image.h"
 
@@ -554,10 +563,26 @@ static void blitScaledAlphaAffine(SDL_Surface* src, const SDL_Rect* srcRect,
     int sh  = srcRect ? srcRect->h : src->h;
     if (sw <= 0 || sh <= 0) return;
 
-    // Bounding radius = half-diagonal спрайта в screen-пикселях + запас
-    float halfW = fabsf((float)sw * scaleX) * 0.5f;
-    float halfH = fabsf((float)sh * scaleY) * 0.5f;
-    int radius = (int)sqrtf(halfW * halfW + halfH * halfH) + 2;
+    // Четыре угла спрайта относительно pivot в screen coords
+    float cx[4] = {
+        (float)(-pivotSrcX)      * scaleX,
+        (float)(sw - pivotSrcX)  * scaleX,
+        (float)(-pivotSrcX)      * scaleX,
+        (float)(sw - pivotSrcX)  * scaleX
+    };
+    float cy[4] = {
+        (float)(-pivotSrcY)      * scaleY,
+        (float)(-pivotSrcY)      * scaleY,
+        (float)(sh - pivotSrcY)  * scaleY,
+        (float)(sh - pivotSrcY)  * scaleY
+    };
+    float maxR2 = 0.0f;
+    for (int k = 0; k < 4; k++) {
+        float r2 = cx[k] * cx[k] + cy[k] * cy[k];
+        if (r2 > maxR2) maxR2 = r2;
+    }
+    int radius = (int)sqrtf(maxR2) + 2;
+
 
     int dstX = pivotDstX - radius;
     int dstY = pivotDstY - radius;
@@ -1383,6 +1408,14 @@ typedef struct {
     SDLDebugInfo debugInfo;
     int     spritesDrawnThisFrame; // счётчик спрайтов за кадр
     DebugBBoxArray debugBBoxes;    // хитбоксы для отрисовки в endFrame
+
+    // Text rendering profiling
+    int     textCallsThisFrame;
+    int     totalGlyphsThisFrame;
+    uint64_t textTotalUs;        // microseconds spent in drawText
+    uint64_t blitTotalUs;        // microseconds spent in blitTextGlyph
+    uint64_t decodeUtf8TotalUs;  // microseconds spent in UTF-8 decode
+    uint64_t findGlyphTotalUs;   // microseconds spent in findGlyph
 } SDLRendererOpt;
 
 // ===[ Loading screen ]===
@@ -1513,6 +1546,14 @@ static void sdlOptBeginFrame(Renderer* renderer,
     // Reset per-frame sprite counter
     opt->spritesDrawnThisFrame = 0;
 
+    // Reset per-frame text counters
+    opt->textCallsThisFrame = 0;
+    opt->totalGlyphsThisFrame = 0;
+    opt->textTotalUs = 0;
+    opt->blitTotalUs = 0;
+    opt->decodeUtf8TotalUs = 0;
+    opt->findGlyphTotalUs = 0;
+
     SDL_SetClipRect(sdl->screen, NULL);
     SDL_FillRect(sdl->screen, NULL,
                  SDL_MapRGB(sdl->screen->format, 0, 0, 0));
@@ -1582,6 +1623,11 @@ static void sdlOptEndFrame(Renderer* renderer) {
         drawDebugOverlay(sdl->screen, &opt->debugInfo);
     }
 
+    // Draw debug menu ON TOP of everything (independent of overlay)
+    if (g_debugMenu.visible) {
+        DebugMenu_draw(renderer, sdl->screen);
+    }
+
     SDL_SetClipRect(sdl->screen, NULL);
     SDL_Flip(sdl->screen);
 }
@@ -1590,7 +1636,18 @@ void SDLRendererOpt_updateDebugInfo(Renderer* renderer, const SDLDebugInfo* info
     if (!renderer || !info) return;
     SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
     opt->debugInfo = *info;
-    opt->debugOverlayEnabled = true; // always enabled when called
+    // Don't auto-enable overlay here — let debug menu control it
+}
+
+void SDLRendererOpt_toggleDebugOverlay(Renderer* renderer) {
+    if (!renderer) return;
+    SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
+    opt->debugOverlayEnabled = !opt->debugOverlayEnabled;
+}
+
+bool SDLRendererOpt_isDebugOverlayEnabled(Renderer* renderer) {
+    if (!renderer) return false;
+    return ((SDLRendererOpt*)renderer)->debugOverlayEnabled;
 }
 
 // ===[ Vtable: beginView ]===
@@ -1644,10 +1701,7 @@ static void recordSpriteBBox(SDLRendererOpt* opt, int x, int y, int w, int h,
                               int32_t tpagIndex, float alpha,
                               float angleDeg, float xscale, float yscale)
 {
-    // Increment sprite counter
-    opt->spritesDrawnThisFrame++;
-
-    // Record bbox for rendering in endFrame
+    // Record bbox for rendering in endFrame (sprite counter already incremented by caller)
     if (opt->debugSpriteBBoxes && opt->debugBBoxes.count < MAX_DEBUG_BBOXES) {
         DebugBBox* bbox = &opt->debugBBoxes.boxes[opt->debugBBoxes.count];
         bbox->x = (int16_t)x;
@@ -1677,6 +1731,8 @@ static void sdlOptDrawSpritePart(Renderer* renderer,
                                   uint32_t color, float alpha)
 {
     SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
+    
+    opt->spritesDrawnThisFrame++;
     SDLRenderer* sdl = &opt->base;
     DataWin* dw = renderer->dataWin;
 
@@ -1731,6 +1787,8 @@ static void sdlOptDrawSprite(Renderer* renderer,
                               uint32_t color, float alpha)
 {
     SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
+    
+    opt->spritesDrawnThisFrame++;
     SDLRenderer* sdl = &opt->base;
     DataWin* dw = renderer->dataWin;
 
@@ -1835,10 +1893,18 @@ static void sdlOptDrawSprite(Renderer* renderer,
                                screenScaleX, screenScaleY,
                                ga, angleInt);
     } else if (needsTint) {
+        
+        if (opt->debugSpriteBBoxes) {
+            recordSpriteBBox(opt, (int)bx, (int)by, dstW, dstH, tpagIndex, alpha, angleDeg, xscale, yscale);
+        }
         blitScaledAlphaOptimizedTint(src, &srcRect, sdl->screen,
                                       (int)bx, (int)by, dstW, dstH, color, ga, rotation,
                                       flipX, flipY);
     } else {
+        
+        if (opt->debugSpriteBBoxes) {
+            recordSpriteBBox(opt, (int)bx, (int)by, dstW, dstH, tpagIndex, alpha, angleDeg, xscale, yscale);
+        }
         blitScaledAlphaOptimized(src, &srcRect, sdl->screen,
                                   (int)bx, (int)by, dstW, dstH, ga, rotation,
                                   flipX, flipY);
@@ -2047,8 +2113,7 @@ static void sdlOptDrawTriangle(Renderer* renderer,
     sdlOptDrawLine(renderer, x3, y3, x1, y1, 1, 0xFFFFFF, 1.0f);
 }
 
-// ===[ Text glyph blit — без LUT, прямой fixed-point расчёт ]===
-// Оптимизировано для маленьких глифов где LUT дороже рендеринга
+// ===[ Text glyph blit — с LUT для tint и fast path для белого ]===
 static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int srcH,
                           SDL_Surface* dst, int dstX, int dstY, int dstW, int dstH,
                           uint32_t tintColor)
@@ -2066,10 +2131,6 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
     int endY = (dstY + dstH) < cy2 ? (dstY + dstH) : cy2;
     if (startX >= endX || startY >= endY) return;
 
-    const uint8_t tintR = BGR_R(tintColor);
-    const uint8_t tintG = BGR_G(tintColor);
-    const uint8_t tintB = BGR_B(tintColor);
-
     int32_t stepX = (srcW << 16) / dstW;
     int32_t stepY = (srcH << 16) / dstH;
 
@@ -2078,10 +2139,69 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
     const uint8_t* srcPixels = (const uint8_t*)src->pixels;
     int srcPitch = src->pitch;
 
+    // Fast path: white tint (0x00FFFFFF)
+    if (tintColor == 0x00FFFFFF) {
+        // True 1:1 scale, no clip — skip all fixed-point math
+        if (dstW == srcW && dstH == srcH && startX == dstX && startY == dstY &&
+            endX == dstX + dstW && endY == dstY + dstH &&
+            (unsigned)(srcX + srcW) <= (unsigned)src->w &&
+            (unsigned)(srcY + srcH) <= (unsigned)src->h) {
+            const uint16_t* srcRow = (const uint16_t*)(srcPixels + srcY * srcPitch) + srcX;
+            uint16_t* dstRow = dstPixels + dstY * dstPitch + dstX;
+            int srcPitch16 = srcPitch / 2;
+
+            for (int y = 0; y < srcH; y++) {
+                for (int x = 0; x < srcW; x++) {
+                    uint16_t sc = srcRow[x];
+                    if (sc != 0) dstRow[x] = sc;
+                }
+                srcRow += srcPitch16;
+                dstRow += dstPitch;
+            }
+            return;
+        }
+        // Scaled or clipped — use fixed-point loop
+        int32_t accumY = (int64_t)(startY - dstY) * stepY;
+        for (int dy = startY; dy < endY; dy++) {
+            int sy = srcY + (accumY >> 16);
+            accumY += stepY;
+            if ((unsigned)sy >= (unsigned)src->h) continue;
+
+            const uint16_t* srcRow = (const uint16_t*)(srcPixels + sy * srcPitch);
+            uint16_t* dstRow = dstPixels + dy * dstPitch;
+
+            int32_t accumX = (int64_t)(startX - dstX) * stepX;
+            for (int dx = startX; dx < endX; dx++) {
+                int sx = srcX + (accumX >> 16);
+                accumX += stepX;
+                if ((unsigned)sx < (unsigned)src->w) {
+                    uint16_t sc = srcRow[sx];
+                    if (sc != 0) {
+                        dstRow[dx] = sc;
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Colored tint — use LUT for fast channel blending
+    const uint8_t tintR = BGR_R(tintColor);
+    const uint8_t tintG = BGR_G(tintColor);
+    const uint8_t tintB = BGR_B(tintColor);
+
+    uint8_t tintLUT_R[256], tintLUT_G[256], tintLUT_B[256];
+    for (int i = 0; i < 256; i++) {
+        tintLUT_R[i] = (uint8_t)((i * tintR) >> 8);
+        tintLUT_G[i] = (uint8_t)((i * tintG) >> 8);
+        tintLUT_B[i] = (uint8_t)((i * tintB) >> 8);
+    }
+
     int32_t accumY = (int64_t)(startY - dstY) * stepY;
     for (int dy = startY; dy < endY; dy++) {
         int sy = srcY + (accumY >> 16);
-        if ((unsigned)sy >= (unsigned)src->h) { accumY += stepY; continue; }
+        accumY += stepY;
+        if ((unsigned)sy >= (unsigned)src->h) continue;
 
         const uint16_t* srcRow = (const uint16_t*)(srcPixels + sy * srcPitch);
         uint16_t* dstRow = dstPixels + dy * dstPitch;
@@ -2089,21 +2209,17 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
         int32_t accumX = (int64_t)(startX - dstX) * stepX;
         for (int dx = startX; dx < endX; dx++) {
             int sx = srcX + (accumX >> 16);
+            accumX += stepX;
             if ((unsigned)sx < (unsigned)src->w) {
                 uint16_t sc = srcRow[sx];
                 if (sc != 0) {
                     uint8_t sr = R565_SR(sc);
                     uint8_t sg = R565_SG(sc);
                     uint8_t sb = R565_SB(sc);
-                    uint8_t tr = (uint8_t)(((uint32_t)sr * tintR) >> 8);
-                    uint8_t tg = (uint8_t)(((uint32_t)sg * tintG) >> 8);
-                    uint8_t tb = (uint8_t)(((uint32_t)sb * tintB) >> 8);
-                    dstRow[dx] = R565_PACK(tr, tg, tb);
+                    dstRow[dx] = R565_PACK(tintLUT_R[sr], tintLUT_G[sg], tintLUT_B[sb]);
                 }
             }
-            accumX += stepX;
         }
-        accumY += stepY;
     }
 }
 
@@ -2120,6 +2236,8 @@ static void sdlOptDrawText(Renderer* renderer,
     SDLRenderer* sdl = &opt->base;
     DataWin* dw = renderer->dataWin;
     if (!text || !text[0]) return;
+
+    opt->textCallsThisFrame++;
 
     int32_t fontIndex = renderer->drawFont;
     if (fontIndex < 0 || (uint32_t)fontIndex >= dw->font.count) return;
@@ -2143,7 +2261,73 @@ static void sdlOptDrawText(Renderer* renderer,
     SDL_LockSurface(src);
     SDL_LockSurface(sdl->screen);
 
-    int32_t textLen   = (int32_t)strlen(text);
+    // Precompute screen scale factors to avoid per-glyph function calls
+    const float screenScaleX = sdl->viewToPortX * sdl->gameToWindowX;
+    const float screenScaleY = sdl->viewToPortY * sdl->gameToWindowY;
+    const float viewOffsetX = sdl->viewW > 0 ? -sdl->viewX * screenScaleX : 0;
+    const float viewOffsetY = sdl->viewH > 0 ? -sdl->viewY * screenScaleY : 0;
+    const float portBaseX = sdl->portX * sdl->gameToWindowX;
+    const float portBaseY = sdl->portY * sdl->gameToWindowY;
+
+    const float sx = xscale * font->scaleX;
+    const float sy = yscale * font->scaleY;
+    const uint32_t tintColor = renderer->drawColor;
+
+    // Fast path for single-line, left-aligned text with no alignment math
+    if (renderer->drawHalign == 0 && renderer->drawValign == 0) {
+        // Simple path: just iterate characters without line measuring
+        int32_t pos = 0;
+        int32_t textLen = (int32_t)strlen(text);
+        float cursorX = 0, cursorY = 0;
+
+        while (pos < textLen) {
+            uint16_t ch = TextUtils_decodeUtf8(text, textLen, &pos);
+            FontGlyph* glyph = TextUtils_findGlyph(font, ch);
+            if (!glyph) continue;
+            if (glyph->sourceWidth == 0 || glyph->sourceHeight == 0) {
+                cursorX += glyph->shift;
+                continue;
+            }
+
+            float gx = x + (cursorX + (float)glyph->offset) * sx;
+            float gy = y + cursorY * sy;
+
+            float bx = portBaseX + (gx + viewOffsetX) * screenScaleX;
+            float by = portBaseY + (gy + viewOffsetY) * screenScaleY;
+
+            int dstW = (int)(glyph->sourceWidth * sx * screenScaleX + 0.5f);
+            int dstH = (int)(glyph->sourceHeight * sy * screenScaleY + 0.5f);
+
+            SDL_Rect srcRect = {
+                (Sint16)(baseTpag->sourceX + glyph->sourceX),
+                (Sint16)(baseTpag->sourceY + glyph->sourceY),
+                (Uint16)glyph->sourceWidth,
+                (Uint16)glyph->sourceHeight
+            };
+
+            blitTextGlyph(src, srcRect.x, srcRect.y, srcRect.w, srcRect.h,
+                sdl->screen,
+                (int)bx, (int)by,
+                dstW, dstH,
+                tintColor);
+
+            opt->totalGlyphsThisFrame++;
+            cursorX += glyph->shift;
+            if (pos < textLen) {
+                int32_t savedPos = pos;
+                uint16_t nextCh = TextUtils_decodeUtf8(text, textLen, &pos);
+                pos = savedPos;
+                cursorX += TextUtils_getKerningOffset(glyph, nextCh);
+            }
+        }
+
+        SDL_UnlockSurface(sdl->screen);
+        SDL_UnlockSurface(src);
+        return;
+    }
+
+    // Full path with alignment (rarely used)
+    int32_t textLen = (int32_t)strlen(text);
     int32_t lineCount = TextUtils_countLines(text, textLen);
 
     float totalHeight = (float)lineCount * (float)font->emSize;
@@ -2151,12 +2335,8 @@ static void sdlOptDrawText(Renderer* renderer,
     if      (renderer->drawValign == 1) valignOffset = -totalHeight / 2.0f;
     else if (renderer->drawValign == 2) valignOffset = -totalHeight;
 
-    float cursorY   = valignOffset;
+    float cursorY = valignOffset;
     int32_t lineStart = 0;
-    uint32_t tintColor = renderer->drawColor;
-
-    const float sx = xscale * font->scaleX;
-    const float sy = yscale * font->scaleY;
 
     for (int32_t lineIdx = 0; lineIdx < lineCount; lineIdx++) {
         int32_t lineEnd = lineStart;
@@ -2180,11 +2360,14 @@ static void sdlOptDrawText(Renderer* renderer,
                 continue;
             }
 
-            float gx = roundf(x + (cursorX + (float)glyph->offset) * sx);
-            float gy = roundf(y + cursorY * sy);
+            float gx = x + (cursorX + (float)glyph->offset) * sx;
+            float gy = y + cursorY * sy;
 
-            float bx, by;
-            viewToScreen(sdl, gx, gy, &bx, &by);
+            float bx = portBaseX + (gx + viewOffsetX) * screenScaleX;
+            float by = portBaseY + (gy + viewOffsetY) * screenScaleY;
+
+            int dstW = (int)(glyph->sourceWidth * sx * screenScaleX + 0.5f);
+            int dstH = (int)(glyph->sourceHeight * sy * screenScaleY + 0.5f);
 
             SDL_Rect srcRect = {
                 (Sint16)(baseTpag->sourceX + glyph->sourceX),
@@ -2193,15 +2376,13 @@ static void sdlOptDrawText(Renderer* renderer,
                 (Uint16)glyph->sourceHeight
             };
 
-            // Текст всегда рисуется с полной непрозрачностью (255)
-            // NOTE: surfaces already locked above
             blitTextGlyph(src, srcRect.x, srcRect.y, srcRect.w, srcRect.h,
                 sdl->screen,
                 (int)bx, (int)by,
-                (int)scaleW(sdl, (float)glyph->sourceWidth  * sx),
-                (int)scaleH(sdl, (float)glyph->sourceHeight * sy),
+                dstW, dstH,
                 tintColor);
 
+            opt->totalGlyphsThisFrame++;
             cursorX += glyph->shift;
             if (pos < lineLen) {
                 int32_t savedPos = pos;
@@ -2344,6 +2525,8 @@ void SDLRendererOpt_toggleDebugBBoxes(Renderer* renderer) {
     SDLRendererOpt* opt = (SDLRendererOpt*)renderer;
     opt->debugSpriteBBoxes = !opt->debugSpriteBBoxes;
     fprintf(stderr, "Debug sprite bboxes: %s\n", opt->debugSpriteBBoxes ? "ON" : "OFF");
+    // Clear any leftover bboxes
+    opt->debugBBoxes.count = 0;
 }
 
 void SDLRendererOpt_toggleDebugLogging(Renderer* renderer) {
@@ -2361,6 +2544,10 @@ bool SDLRendererOpt_isDebugBBoxesEnabled(Renderer* renderer) {
 bool SDLRendererOpt_isDebugLoggingEnabled(Renderer* renderer) {
     if (!renderer) return false;
     return ((SDLRendererOpt*)renderer)->debugSpriteLogging;
+}
+
+TTF_Font* SDLRendererOpt_getLoadingFont(void) {
+    return g_loadingFont;
 }
 
 // ===[ Public constructor ]===

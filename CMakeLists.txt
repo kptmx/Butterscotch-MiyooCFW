@@ -35,8 +35,8 @@ file(GLOB SOURCES
 
 # Platform specific files builds
 if(PLATFORM STREQUAL "sdl")
-    # SDL platform files + miniaudio for audio
-    file(GLOB PLATFORM_SOURCES src/sdl/*.c src/glfw/ma_audio_system.cpp)
+    # SDL platform files + SDL_mixer audio (defined later in SDL section)
+    set(PLATFORM_SOURCES "")
 elseif(PLATFORM STREQUAL "miyoo")
     # Miyoo uses SDL platform files with NOOP audio (no sound)
     file(GLOB PLATFORM_SOURCES src/sdl/*.c)
@@ -51,6 +51,11 @@ if(PLATFORM STREQUAL "miyoo")
     set_source_files_properties(${SOURCES} ${PLATFORM_SOURCES} PROPERTIES LANGUAGE CXX)
     # Allow implicit void* conversions for C++ compilation of C code
     target_compile_options(butterscotch PRIVATE -fpermissive)
+
+    # But keep libogg and Tremor files as pure C (they don't need C++ features)
+    set_source_files_properties(${OGG_SOURCES} PROPERTIES LANGUAGE C)
+    set_source_files_properties(${TREMOR_SOURCES} PROPERTIES LANGUAGE C)
+    set_source_files_properties(src/sdl/tremor_backend.c PROPERTIES LANGUAGE C)
 endif()
 
 target_include_directories(butterscotch PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -100,51 +105,100 @@ if(PLATFORM STREQUAL "glfw")
         target_link_options(butterscotch PRIVATE -fsanitize=address)
     endif()
 elseif(PLATFORM STREQUAL "sdl")
-    # SDL 1.2 with software rendering and miniaudio for audio
+    # SDL 1.2 with software rendering and miniaudio + Tremor for audio
 
-    # SDL platform files + miniaudio for audio
-    file(GLOB PLATFORM_SOURCES src/sdl/*.c src/glfw/ma_audio_system.cpp)
+    # SDL platform files + miniaudio Tremor audio + debug menu
+    file(GLOB SDL_PLATFORM_SOURCES src/sdl/*.c)
+    set(PLATFORM_SOURCES ${SDL_PLATFORM_SOURCES} src/sdl/ma_tremor_audio.cpp src/sdl/tremor_backend.c src/sdl/debug_menu.c)
+    target_sources(butterscotch PRIVATE ${PLATFORM_SOURCES})
 
-    # Allow implicit void* conversions for C++ audio file
-    target_compile_options(butterscotch PRIVATE -fpermissive)
+    # libogg (static build)
+    set(OGG_SOURCES
+        vendor/ogg/src/bitwise.c
+        vendor/ogg/src/framing.c
+    )
+    target_sources(butterscotch PRIVATE ${OGG_SOURCES})
+    target_include_directories(butterscotch PUBLIC vendor/ogg/include)
+
+    # Tremor (libvorbisidec - integer OGG Vorbis decoder, static build)
+    set(TREMOR_SOURCES
+        vendor/tremor/block.c
+        vendor/tremor/codebook.c
+        vendor/tremor/floor0.c
+        vendor/tremor/floor1.c
+        vendor/tremor/info.c
+        vendor/tremor/mapping0.c
+        vendor/tremor/mdct.c
+        vendor/tremor/registry.c
+        vendor/tremor/res012.c
+        vendor/tremor/sharedbook.c
+        vendor/tremor/synthesis.c
+        vendor/tremor/vorbisfile.c
+        vendor/tremor/window.c
+    )
+    target_sources(butterscotch PRIVATE ${TREMOR_SOURCES})
+    target_include_directories(butterscotch PUBLIC vendor/tremor)
 
     # stb_image for PNG decoding
     target_include_directories(butterscotch PUBLIC vendor/stb/image)
 
-    # stb_vorbis for OGG decoding
-    target_include_directories(butterscotch PUBLIC vendor/stb/vorbis)
-
-    # miniaudio for audio playback
+    # miniaudio for audio playback (ALSA only)
     target_include_directories(butterscotch PUBLIC vendor/miniaudio)
+
+    # Disable unnecessary miniaudio backends for SDL desktop Linux
+    add_compile_definitions(MA_NO_PULSEAUDIO MA_NO_JACK MA_NO_SNDIO MA_NO_AUDIO4 MA_NO_OSS MA_NO_COREAUDIO MA_NO_WASAPI MA_NO_DSOUND MA_NO_WINMM MA_NO_AAUDIO MA_NO_OPENSL MA_NO_WEBAUDIO)
 
     if(MINGW)
         find_package(SDL REQUIRED)
         find_package(SDL_ttf REQUIRED)
         find_package(SDL_image REQUIRED)
         target_include_directories(butterscotch PRIVATE ${SDL_INCLUDE_DIR})
-        target_link_libraries(butterscotch ${SDL_LIBRARY} ${SDL_TTF_LIBRARY} ${SDL_IMAGE_LIBRARY} m atomic)
+        target_link_libraries(butterscotch ${SDL_LIBRARY} ${SDL_TTF_LIBRARY} ${SDL_IMAGE_LIBRARY} m atomic asound)
         target_link_options(butterscotch PRIVATE -static)
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(SDL REQUIRED sdl SDL_ttf SDL_image)
         target_include_directories(butterscotch PRIVATE ${SDL_INCLUDE_DIRS})
-        target_link_libraries(butterscotch ${SDL_LIBRARIES} m pthread atomic)
+        target_link_libraries(butterscotch ${SDL_LIBRARIES} m pthread atomic asound)
     endif()
 elseif(PLATFORM STREQUAL "miyoo")
     # Miyoo CFW (SDL 1.2 with software rendering, cross-compiled)
-    # Audio via miniaudio with ALSA backend only
+    # Audio via miniaudio + Tremor (ALSA only)
 
-    # SDL platform files
-    file(GLOB PLATFORM_SOURCES src/sdl/*.c)
+    # SDL platform files + miniaudio Tremor audio
+    file(GLOB MIYOO_PLATFORM_SOURCES src/sdl/*.c)
+    set(PLATFORM_SOURCES ${MIYOO_PLATFORM_SOURCES} src/sdl/ma_tremor_audio.cpp src/sdl/tremor_backend.c src/sdl/debug_menu.c)
+    target_sources(butterscotch PRIVATE ${PLATFORM_SOURCES})
 
-    # Add miniaudio to the target explicitly (not in src/sdl/)
-    target_sources(butterscotch PRIVATE src/glfw/ma_audio_system.cpp)
+    # libogg (static build)
+    set(OGG_SOURCES
+        vendor/ogg/src/bitwise.c
+        vendor/ogg/src/framing.c
+    )
+    target_sources(butterscotch PRIVATE ${OGG_SOURCES})
+    target_include_directories(butterscotch PUBLIC vendor/ogg/include)
+
+    # Tremor (libvorbisidec - integer OGG Vorbis decoder, static build)
+    set(TREMOR_SOURCES
+        vendor/tremor/block.c
+        vendor/tremor/codebook.c
+        vendor/tremor/floor0.c
+        vendor/tremor/floor1.c
+        vendor/tremor/info.c
+        vendor/tremor/mapping0.c
+        vendor/tremor/mdct.c
+        vendor/tremor/registry.c
+        vendor/tremor/res012.c
+        vendor/tremor/sharedbook.c
+        vendor/tremor/synthesis.c
+        vendor/tremor/vorbisfile.c
+        vendor/tremor/window.c
+    )
+    target_sources(butterscotch PRIVATE ${TREMOR_SOURCES})
+    target_include_directories(butterscotch PUBLIC vendor/tremor)
 
     # stb_image for PNG decoding
     target_include_directories(butterscotch PUBLIC vendor/stb/image)
-
-    # stb_vorbis for OGG decoding (used by miniaudio)
-    target_include_directories(butterscotch PUBLIC vendor/stb/vorbis)
 
     # miniaudio for audio playback (ALSA only)
     target_include_directories(butterscotch PUBLIC vendor/miniaudio)
@@ -168,7 +222,7 @@ elseif(PLATFORM STREQUAL "miyoo")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL REQUIRED sdl SDL_ttf SDL_image SDL_mixer freetype2)
     target_include_directories(butterscotch PRIVATE ${SDL_INCLUDE_DIRS})
-    target_link_libraries(butterscotch ${SDL_LIBRARIES} m pthread asound ts mad mpg123 vorbisfile vorbis ogg mikmod png z bz2 freetype atomic)
+    target_link_libraries(butterscotch ${SDL_LIBRARIES} m pthread asound ts mad mpg123 mikmod png z bz2 freetype atomic)
 
     # Linker flags for size optimization (strip only for Release, no LTO)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")

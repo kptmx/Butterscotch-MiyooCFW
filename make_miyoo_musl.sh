@@ -30,4 +30,6 @@ echolog "Deleting container..."
 sudo docker rm "${CONTAINER_ID}"
 
 echolog "Build complete!"
+echo "Binary: ${PROJECT_DIR}/build_miyoo/butterscotch"
+echo "IPK:    ${PROJECT_DIR}/build_miyoo/butterscotch.ipk"
 

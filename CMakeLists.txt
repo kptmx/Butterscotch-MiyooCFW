@@ -289,14 +289,9 @@ elseif(PLATFORM STREQUAL "miyoo")
     )
 
     # Build IPK using opkg-build (outputs directly to build directory)
-    # Rename to consistent name: version + optional commit hash
-    set(BUTTERSCOTCH_IPK_BASE "butterscotch-${BUTTERSCOTCH_VERSION}")
-    if(BUTTERSCOTCH_COMMIT_HASH AND NOT BUTTERSCOTCH_COMMIT_HASH STREQUAL "unknown")
-        set(BUTTERSCOTCH_IPK_BASE "${BUTTERSCOTCH_IPK_BASE}-${BUTTERSCOTCH_COMMIT_HASH}")
-    endif()
     add_custom_command(TARGET ipk POST_BUILD
         COMMAND opkg-build "${IPK_ROOT}" "${CMAKE_BINARY_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E rename ${CMAKE_BINARY_DIR}/butterscotch_${BUTTERSCOTCH_VERSION}_arm.ipk ${CMAKE_BINARY_DIR}/${BUTTERSCOTCH_IPK_BASE}_arm.ipk
+        COMMAND ${CMAKE_COMMAND} -E rename ${CMAKE_BINARY_DIR}/butterscotch_${BUTTERSCOTCH_VERSION}_arm.ipk ${CMAKE_BINARY_DIR}/butterscotch.ipk
         DEPENDS butterscotch
         COMMENT "Building IPK with opkg-build"
     )

@@ -4,7 +4,7 @@
 set -e
 
 PROJECT_DIR="."
-MAKE_CMD="cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release . && cmake --build build_miyoo -j\$(nproc) "
+MAKE_CMD="cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release . && cmake --build build_miyoo -j\$(nproc) && cmake --build build_miyoo --target ipk"
 
 USER_GROUP=`id -gn`
 CYAN="\033[1;36m"
@@ -30,3 +30,5 @@ echolog "Deleting container..."
 sudo docker rm "${CONTAINER_ID}"
 
 echolog "Build complete!"
+echo "Binary: ${PROJECT_DIR}/build_miyoo/butterscotch"
+echo "IPK:    ${PROJECT_DIR}/build_miyoo/butterscotch.ipk"

@@ -11,6 +11,7 @@ option(NO_AUDIO "Disable audio support" OFF)
 # Build metadata
 set(BUTTERSCOTCH_COMMIT_HASH "unknown" CACHE STRING "Git commit hash")
 set(BUTTERSCOTCH_COMMIT_DATE "unknown" CACHE STRING "Git commit date")
+set(BUTTERSCOTCH_VERSION "1.2.0" CACHE STRING "Butterscotch version")
 add_compile_definitions(
     BUTTERSCOTCH_COMMIT_HASH="${BUTTERSCOTCH_COMMIT_HASH}"
     BUTTERSCOTCH_COMMIT_DATE="${BUTTERSCOTCH_COMMIT_DATE}"
@@ -235,11 +236,10 @@ elseif(PLATFORM STREQUAL "miyoo")
     # ===[ IPK Package Creation for Miyoo ]===
     # Install to /mnt/games/butterscotch/ with gmenu2x integration
     set(IPK_ROOT "${CMAKE_BINARY_DIR}/ipk_root")
-    set(IPK_DATA_DIR "${IPK_ROOT}/data")
-    set(IPK_GAMES_DIR "${IPK_DATA_DIR}/mnt/games/butterscotch")
-    set(IPK_GMENU2X_DIR "${IPK_DATA_DIR}//mnt/gmenu2x/sections/games")
+    set(IPK_GAMES_DIR "${IPK_ROOT}/mnt/games/butterscotch")
+    set(IPK_GMENU2X_DIR "${IPK_ROOT}/mnt/gmenu2x/sections/games")
     set(IPK_CONTROL_DIR "${IPK_ROOT}/CONTROL")
-    
+
     # Create directory structure
     add_custom_target(ipk
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${IPK_ROOT}
@@ -248,72 +248,57 @@ elseif(PLATFORM STREQUAL "miyoo")
         COMMAND ${CMAKE_COMMAND} -E make_directory ${IPK_CONTROL_DIR}
         COMMENT "Creating IPK directory structure"
     )
-    
-    # Copy binary after build
+
+    # Copy binary and icon after build
     add_custom_command(TARGET ipk POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:butterscotch> ${IPK_GAMES_DIR}/butterscotch
-        COMMENT "Copying butterscotch binary to IPK package"
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/butterscotch.png ${IPK_GAMES_DIR}/butterscotch.png
+        COMMENT "Copying butterscotch binary and icon to IPK package"
     )
-    
+
     # Create gmenu2x section file
     add_custom_command(TARGET ipk POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "title=Butterscotch" > ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "description=GameMaker Studio runner implementation focused on running Undertale." >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "exec=/mnt/games/butterscotch/butterscotch" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "icon=/mnt/games/butterscotch/butterscotch.png" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectordir=/mnt/" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorbrowser=true" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorfilter=.unx,.win" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
-        
-        COMMAND ${CMAKE_COMMAND} -E echo "title=Butterscotch (Debug)" > ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+
+        COMMAND ${CMAKE_COMMAND} -E echo "title=Butterscotch - Debug" > ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "description=Open in-game debug menu with RESET button" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
-        COMMAND ${CMAKE_COMMAND} -E echo "exec=/mnt/games/butterscotch/butterscotch --debug" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "exec=/mnt/games/butterscotch/butterscotch" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "params=--debug" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "icon=/mnt/games/butterscotch/butterscotch.png" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectordir=/mnt/" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorbrowser=true" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorfilter=.unx,.win" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
         COMMENT "Creating gmenu2x section files"
     )
-    
+
     # Create control file
     add_custom_command(TARGET ipk POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "Package: butterscotch" > ${IPK_CONTROL_DIR}/control
-        COMMAND ${CMAKE_COMMAND} -E echo "Version: 1.1.0" >> ${IPK_CONTROL_DIR}/control
+        COMMAND ${CMAKE_COMMAND} -E echo "Version: ${BUTTERSCOTCH_VERSION}" >> ${IPK_CONTROL_DIR}/control
         COMMAND ${CMAKE_COMMAND} -E echo "Section: games" >> ${IPK_CONTROL_DIR}/control
         COMMAND ${CMAKE_COMMAND} -E echo "Architecture: arm" >> ${IPK_CONTROL_DIR}/control
+        COMMAND ${CMAKE_COMMAND} -E echo "Maintainer: kptmx" >> ${IPK_CONTROL_DIR}/control
         COMMAND ${CMAKE_COMMAND} -E echo "Description: Undertale-focused GameMaker Studio 1.4 runner for Miyoo.  Assets folder with data.win/game.unx file needed to run" >> ${IPK_CONTROL_DIR}/control
         COMMENT "Creating control file"
     )
-    
-    # Create debian-binary
-    add_custom_command(TARGET ipk POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E echo "2.0" > ${IPK_ROOT}/debian-binary
-        COMMENT "Creating debian-binary"
-    )
-    
-    # Create data.tar.gz
-    add_custom_command(TARGET ipk POST_BUILD
-        COMMAND tar -czf ${CMAKE_BINARY_DIR}/data.tar.gz -C ${IPK_DATA_DIR} .
-        COMMENT "Creating data.tar.gz"
-    )
-    
-    # Create control.tar.gz
-    add_custom_command(TARGET ipk POST_BUILD
-        COMMAND tar -czf ${CMAKE_BINARY_DIR}/control.tar.gz -C ${IPK_CONTROL_DIR} .
-        COMMENT "Creating control.tar.gz"
-    )
-    
-    # Copy archives to IPK_ROOT for final packaging
-    add_custom_command(TARGET ipk POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/data.tar.gz ${IPK_ROOT}/data.tar.gz
-        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/control.tar.gz ${IPK_ROOT}/control.tar.gz
-        COMMENT "Copying archives to IPK root"
-    )
 
-    # Create final IPK
+    # Build IPK using opkg-build (outputs directly to build directory)
+    # Rename to consistent name: version + optional commit hash
+    set(BUTTERSCOTCH_IPK_BASE "butterscotch-${BUTTERSCOTCH_VERSION}")
+    if(BUTTERSCOTCH_COMMIT_HASH AND NOT BUTTERSCOTCH_COMMIT_HASH STREQUAL "unknown")
+        set(BUTTERSCOTCH_IPK_BASE "${BUTTERSCOTCH_IPK_BASE}-${BUTTERSCOTCH_COMMIT_HASH}")
+    endif()
     add_custom_command(TARGET ipk POST_BUILD
-        COMMAND tar -cf ${CMAKE_BINARY_DIR}/butterscotch_1.0.0_all.ipk debian-binary control.tar.gz data.tar.gz
-        WORKING_DIRECTORY ${IPK_ROOT}
+        COMMAND opkg-build "${IPK_ROOT}" "${CMAKE_BINARY_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E rename ${CMAKE_BINARY_DIR}/butterscotch_${BUTTERSCOTCH_VERSION}_arm.ipk ${CMAKE_BINARY_DIR}/${BUTTERSCOTCH_IPK_BASE}_arm.ipk
         DEPENDS butterscotch
-        COMMENT "Creating butterscotch_1.0.0_all.ipk"
+        COMMENT "Building IPK with opkg-build"
     )
 elseif(PLATFORM STREQUAL "ps2")
     # The PS2 EE has a single-precision FPU only, so double is software-emulated

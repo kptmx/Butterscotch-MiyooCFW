@@ -368,7 +368,7 @@ int main(int argc, char* argv[]) {
     printf("Loaded \"%s\" (%d) successfully! [Bytecode Version %u]\n", gen8->name, gen8->gameID, gen8->bytecodeVersion);
 
     #ifndef _WIN32
-    #ifdef __GLIBC__
+    #if defined(__GLIBC__) && !defined(__UCLIBC__)
     #include <malloc.h>
     {
         struct mallinfo2 mi = mallinfo2();
@@ -877,7 +877,7 @@ int main(int argc, char* argv[]) {
 
             // Get free memory via mallinfo2 if available
             int freeMemBytes = 0;
-#ifdef __GLIBC__
+#if defined(__GLIBC__) && !defined(__UCLIBC__)
             struct mallinfo2 mi = mallinfo2();
             freeMemBytes = mi.fordblks; // free bytes in heap
 #endif

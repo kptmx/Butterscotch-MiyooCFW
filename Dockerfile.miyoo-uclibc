@@ -1,0 +1,7 @@
+FROM miyoocfw/toolchain-shared-uclibc:latest
+
+RUN apt-get update && apt-get install -y --no-install-recommends cmake && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+ENTRYPOINT ["cmake", "-B", "build_miyoo", "-DPLATFORM=miyoo", "-DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake", "-DCMAKE_BUILD_TYPE=Release", "."]

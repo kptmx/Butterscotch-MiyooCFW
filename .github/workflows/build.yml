@@ -157,6 +157,82 @@ jobs:
           name: butterscotch-glfw-windows-x86
           path: build/butterscotch.exe
 
+  build-miyoo-uclibc:
+    name: Build (Miyoo/uclibc)
+    runs-on: ubuntu-latest
+    container:
+      image: miyoocfw/toolchain-shared-uclibc:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cmake
+        run: apt-get update && apt-get install -y --no-install-recommends cmake
+
+      - name: Get commit info
+        id: commit-info
+        run: |
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(git log -1 --format=%cd --date=short)" >> $GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}"
+
+      - name: Build
+        run: cmake --build build_miyoo -j$(nproc)
+
+      - name: Create IPK package
+        run: cmake --build build_miyoo --target ipk
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: butterscotch-miyoo-uclibc
+          path: build_miyoo/butterscotch
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: butterscotch-miyoo-uclibc-ipk
+          path: build_miyoo/butterscotch-${{ steps.commit-info.outputs.hash }}_arm.ipk
+
+  build-miyoo-musl:
+    name: Build (Miyoo/musl)
+    runs-on: ubuntu-latest
+    container:
+      image: miyoocfw/toolchain-shared-musl:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cmake
+        run: apt-get update && apt-get install -y --no-install-recommends cmake
+
+      - name: Get commit info
+        id: commit-info
+        run: |
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(git log -1 --format=%cd --date=short)" >> $GITHUB_OUTPUT
+
+      - name: Configure
+        run: cmake -B build_miyoo -DPLATFORM=miyoo -DCMAKE_TOOLCHAIN_FILE=cmake/miyoo.cmake -DCMAKE_BUILD_TYPE=Release -DBUTTERSCOTCH_COMMIT_HASH=${{ steps.commit-info.outputs.hash }} "-DBUTTERSCOTCH_COMMIT_DATE=${{ steps.commit-info.outputs.date }}"
+
+      - name: Build
+        run: cmake --build build_miyoo -j$(nproc)
+
+      - name: Create IPK package
+        run: cmake --build build_miyoo --target ipk
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: butterscotch-miyoo-musl
+          path: build_miyoo/butterscotch
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: butterscotch-miyoo-musl-ipk
+          path: build_miyoo/butterscotch-${{ steps.commit-info.outputs.hash }}_arm.ipk
+
   build-ps2:
     name: Build (PS2)
     runs-on: ubuntu-latest

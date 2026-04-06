@@ -258,12 +258,19 @@ elseif(PLATFORM STREQUAL "miyoo")
     # Create gmenu2x section file
     add_custom_command(TARGET ipk POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E echo "title=Butterscotch" > ${IPK_GMENU2X_DIR}/butterscotch.lnk
-        COMMAND ${CMAKE_COMMAND} -E echo "description=GameMaker Studio runner" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "description=GameMaker Studio runner implementation focused on running Undertale." >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "exec=/mnt/games/butterscotch/butterscotch" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectordir=/mnt/" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorbrowser=true" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
         COMMAND ${CMAKE_COMMAND} -E echo "selectorfilter=.unx,.win" >> ${IPK_GMENU2X_DIR}/butterscotch.lnk
-        COMMENT "Creating gmenu2x section file"
+        
+        COMMAND ${CMAKE_COMMAND} -E echo "title=Butterscotch (Debug)" > ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "description=Open in-game debug menu with RESET button" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "exec=/mnt/games/butterscotch/butterscotch --debug" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "selectordir=/mnt/" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "selectorbrowser=true" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMAND ${CMAKE_COMMAND} -E echo "selectorfilter=.unx,.win" >> ${IPK_GMENU2X_DIR}/butterscotch_debug.lnk
+        COMMENT "Creating gmenu2x section files"
     )
     
     # Create control file
@@ -272,7 +279,7 @@ elseif(PLATFORM STREQUAL "miyoo")
         COMMAND ${CMAKE_COMMAND} -E echo "Version: 1.1.0" >> ${IPK_CONTROL_DIR}/control
         COMMAND ${CMAKE_COMMAND} -E echo "Section: games" >> ${IPK_CONTROL_DIR}/control
         COMMAND ${CMAKE_COMMAND} -E echo "Architecture: arm" >> ${IPK_CONTROL_DIR}/control
-        COMMAND ${CMAKE_COMMAND} -E echo "Description: GameMaker Studio 1.4 runner for Miyoo" >> ${IPK_CONTROL_DIR}/control
+        COMMAND ${CMAKE_COMMAND} -E echo "Description: Undertale-focused GameMaker Studio 1.4 runner for Miyoo.  Assets folder with data.win/game.unx file needed to run" >> ${IPK_CONTROL_DIR}/control
         COMMENT "Creating control file"
     )
     

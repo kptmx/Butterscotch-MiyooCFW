@@ -2116,9 +2116,10 @@ static void sdlOptDrawTriangle(Renderer* renderer,
 // ===[ Text glyph blit — с LUT для tint и fast path для белого ]===
 static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int srcH,
                           SDL_Surface* dst, int dstX, int dstY, int dstW, int dstH,
-                          uint32_t tintColor)
+                          uint32_t tintColor, uint8_t globalAlpha)
 {
     if (!src || !dst || dstW <= 0 || dstH <= 0 || srcW <= 0 || srcH <= 0) return;
+    if (globalAlpha == 0) return;
 
     int cx1 = dst->clip_rect.x;
     int cy1 = dst->clip_rect.y;
@@ -2153,7 +2154,18 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
             for (int y = 0; y < srcH; y++) {
                 for (int x = 0; x < srcW; x++) {
                     uint16_t sc = srcRow[x];
-                    if (sc != 0) dstRow[x] = sc;
+                    if (sc != 0) {
+                        if (globalAlpha == 255) {
+                            dstRow[x] = sc;
+                        } else {
+                            uint16_t dc = dstRow[x];
+                            uint8_t invA = 255u - globalAlpha;
+                            dstRow[x] = R565_PACK(
+                                blend8(R565_SR(sc), R565_R(dc), globalAlpha, invA),
+                                blend8(R565_SG(sc), R565_G(dc), globalAlpha, invA),
+                                blend8(R565_SB(sc), R565_B(dc), globalAlpha, invA));
+                        }
+                    }
                 }
                 srcRow += srcPitch16;
                 dstRow += dstPitch;
@@ -2177,7 +2189,16 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
                 if ((unsigned)sx < (unsigned)src->w) {
                     uint16_t sc = srcRow[sx];
                     if (sc != 0) {
-                        dstRow[dx] = sc;
+                        if (globalAlpha == 255) {
+                            dstRow[dx] = sc;
+                        } else {
+                            uint16_t dc = dstRow[dx];
+                            uint8_t invA = 255u - globalAlpha;
+                            dstRow[dx] = R565_PACK(
+                                blend8(R565_SR(sc), R565_R(dc), globalAlpha, invA),
+                                blend8(R565_SG(sc), R565_G(dc), globalAlpha, invA),
+                                blend8(R565_SB(sc), R565_B(dc), globalAlpha, invA));
+                        }
                     }
                 }
             }
@@ -2216,7 +2237,19 @@ static void blitTextGlyph(SDL_Surface* src, int srcX, int srcY, int srcW, int sr
                     uint8_t sr = R565_SR(sc);
                     uint8_t sg = R565_SG(sc);
                     uint8_t sb = R565_SB(sc);
-                    dstRow[dx] = R565_PACK(tintLUT_R[sr], tintLUT_G[sg], tintLUT_B[sb]);
+                    uint8_t tr = tintLUT_R[sr];
+                    uint8_t tg = tintLUT_G[sg];
+                    uint8_t tb = tintLUT_B[sb];
+                    if (globalAlpha == 255) {
+                        dstRow[dx] = R565_PACK(tr, tg, tb);
+                    } else {
+                        uint16_t dc = dstRow[dx];
+                        uint8_t invA = 255u - globalAlpha;
+                        dstRow[dx] = R565_PACK(
+                            blend8(tr, R565_R(dc), globalAlpha, invA),
+                            blend8(tg, R565_G(dc), globalAlpha, invA),
+                            blend8(tb, R565_B(dc), globalAlpha, invA));
+                    }
                 }
             }
         }
@@ -2272,6 +2305,7 @@ static void sdlOptDrawText(Renderer* renderer,
     const float sx = xscale * font->scaleX;
     const float sy = yscale * font->scaleY;
     const uint32_t tintColor = renderer->drawColor;
+    const uint8_t globalAlpha = (uint8_t)(renderer->drawAlpha * 255.0f);
 
     // Fast path for single-line, left-aligned text with no alignment math
     if (renderer->drawHalign == 0 && renderer->drawValign == 0) {
@@ -2309,7 +2343,7 @@ static void sdlOptDrawText(Renderer* renderer,
                 sdl->screen,
                 (int)bx, (int)by,
                 dstW, dstH,
-                tintColor);
+                tintColor, globalAlpha);
 
             opt->totalGlyphsThisFrame++;
             cursorX += glyph->shift;
@@ -2380,7 +2414,7 @@ static void sdlOptDrawText(Renderer* renderer,
                 sdl->screen,
                 (int)bx, (int)by,
                 dstW, dstH,
-                tintColor);
+                tintColor, globalAlpha);
 
             opt->totalGlyphsThisFrame++;
             cursorX += glyph->shift;
@@ -2409,11 +2443,14 @@ static void sdlOptDrawTextColor(Renderer* renderer,
                                  float xscale, float yscale, float angleDeg,
                                  int32_t c1, int32_t c2, int32_t c3, int32_t c4, float alpha)
 {
-    (void)c2; (void)c3; (void)c4; (void)alpha;
+    (void)c2; (void)c3; (void)c4;
     uint32_t saved = renderer->drawColor;
+    float savedAlpha = renderer->drawAlpha;
     renderer->drawColor = (uint32_t)c1;
+    renderer->drawAlpha = alpha;
     sdlOptDrawText(renderer, text, x, y, xscale, yscale, angleDeg);
     renderer->drawColor = saved;
+    renderer->drawAlpha = savedAlpha;
 }
 
 // ===[ Vtable: flush ]===

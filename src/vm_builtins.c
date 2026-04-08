@@ -657,6 +657,10 @@ void VMBuiltins_setVariable(VMContext* ctx, const char* name, RValue val, int32_
         runner->currentRoom->height = (uint32_t) RValue_toInt32(val);
         return;
     }
+    if (strcmp(name, "room_speed") == 0) {
+        runner->currentRoom->speed = (uint32_t) RValue_toInt32(val);
+        return;
+    }
 
     // Read-only variables (silently ignore)
     if (strcmp(name, "os_type") == 0 || strcmp(name, "os_windows") == 0 ||

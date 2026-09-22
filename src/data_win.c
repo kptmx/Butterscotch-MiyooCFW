@@ -11,12 +11,120 @@
 
 // ===[ HELPERS ]===
 
-// Reads a uint32 absolute file offset, resolves it into the pre-loaded STRG buffer,
-// and returns a pointer to the null-terminated string content at that offset.
+// Resolve an absolute file offset to a string byte pointer.
+//
+// Normal GameMaker data.win files keep every string record inside the STRG chunk.
+// Some localized/patched files append extra length-prefixed strings elsewhere
+// (commonly at the end of another chunk) and point STRG entries at those
+// absolute offsets. Keep support for both layouts.
+static const char* resolveStringOffset(DataWin* dw, uint32_t offset) {
+    if (offset == 0) return nullptr;
+
+    if (dw->strgBuffer != nullptr &&
+        offset >= dw->strgBufferBase &&
+        offset < dw->strgBufferBase + dw->strgBufferSize) {
+        return (const char*) (dw->strgBuffer + (offset - dw->strgBufferBase));
+    }
+
+    if (dw->externalStringBuffer != nullptr &&
+        offset >= dw->externalStringBufferBase &&
+        offset < dw->externalStringBufferBase + dw->externalStringBufferSize) {
+        return (const char*) (dw->externalStringBuffer + (offset - dw->externalStringBufferBase));
+    }
+
+    fprintf(stderr,
+            "STRG: string offset 0x%08X is outside STRG [0x%zX, 0x%zX)"
+            " and external string pool [0x%zX, 0x%zX)\n",
+            offset,
+            dw->strgBufferBase,
+            dw->strgBufferBase + dw->strgBufferSize,
+            dw->externalStringBufferBase,
+            dw->externalStringBufferBase + dw->externalStringBufferSize);
+
+    // Return a stable empty string instead of an invalid pointer; this keeps
+    // diagnostics readable and avoids a later segmentation fault.
+    return "";
+}
+
+// Reads a uint32 absolute file offset and returns a pointer to the
+// null-terminated string content at that offset.
 static const char* readStringPtr(BinaryReader* reader, DataWin* dw) {
     uint32_t offset = BinaryReader_readUint32(reader);
-    if (offset == 0) return nullptr;
-    return (const char*) (dw->strgBuffer + (offset - dw->strgBufferBase));
+    return resolveStringOffset(dw, offset);
+}
+
+static uint32_t readUint32AtFile(FILE* file, size_t fileSize, size_t offset, bool* ok) {
+    if (offset + sizeof(uint32_t) > fileSize) {
+        if (ok) *ok = false;
+        return 0;
+    }
+
+    long savedPos = ftell(file);
+    uint32_t value = 0;
+    if (fseek(file, (long) offset, SEEK_SET) != 0 || fread(&value, 1, sizeof(value), file) != sizeof(value)) {
+        if (ok) *ok = false;
+        if (savedPos >= 0) fseek(file, savedPos, SEEK_SET);
+        return 0;
+    }
+    if (savedPos >= 0) fseek(file, savedPos, SEEK_SET);
+    if (ok) *ok = true;
+    return value;
+}
+
+static void loadExternalStringPoolIfNeeded(BinaryReader* reader, DataWin* dw, size_t fileSize) {
+    if (dw->strgBuffer == nullptr || dw->strgBufferSize < sizeof(uint32_t)) return;
+
+    uint32_t count;
+    memcpy(&count, dw->strgBuffer, sizeof(uint32_t));
+
+    size_t pointerTableSize = sizeof(uint32_t) + (size_t) count * sizeof(uint32_t);
+    if (count == 0 || pointerTableSize > dw->strgBufferSize) return;
+
+    bool foundExternal = false;
+    size_t externalStart = fileSize;
+    size_t externalEnd = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t ptr;
+        memcpy(&ptr, dw->strgBuffer + sizeof(uint32_t) + (size_t) i * sizeof(uint32_t), sizeof(uint32_t));
+
+        if (ptr >= dw->strgBufferBase && ptr < dw->strgBufferBase + dw->strgBufferSize) {
+            continue;
+        }
+
+        bool ok = false;
+        uint32_t len = readUint32AtFile(reader->file, fileSize, ptr, &ok);
+        if (!ok) continue;
+
+        // STRG entries point to a 32-bit byte length followed by UTF-8 bytes and
+        // normally a NUL terminator. Reject implausible entries so a random bad
+        // pointer does not make us copy a huge unrelated file range.
+        if ((size_t) ptr + sizeof(uint32_t) + (size_t) len > fileSize || len > 1024 * 1024) {
+            fprintf(stderr,
+                    "STRG: ignoring external string pointer 0x%08X with invalid length %u\n",
+                    ptr, len);
+            continue;
+        }
+
+        size_t end = (size_t) ptr + sizeof(uint32_t) + (size_t) len;
+        if (end < fileSize) end += 1; // include possible trailing NUL
+
+        if ((size_t) ptr < externalStart) externalStart = ptr;
+        if (end > externalEnd) externalEnd = end;
+        foundExternal = true;
+    }
+
+    if (!foundExternal) return;
+
+    dw->externalStringBufferBase = externalStart;
+    dw->externalStringBufferSize = externalEnd - externalStart;
+    dw->externalStringBuffer = BinaryReader_readBytesAt(reader, externalStart, dw->externalStringBufferSize);
+
+    fprintf(stderr,
+            "STRG: loaded external string pool [0x%zX, 0x%zX) (%zu bytes)\n",
+            dw->externalStringBufferBase,
+            dw->externalStringBufferBase + dw->externalStringBufferSize,
+            dw->externalStringBufferSize);
 }
 
 // Reads a pointer list header: count + absolute-offset pointers.
@@ -756,49 +864,66 @@ static void parseFONT(BinaryReader* reader, DataWin* dw) {
     if (count == 0) { free(ptrs); f->fonts = nullptr; return; }
 
     f->fonts = safeMalloc(count * sizeof(Font));
+
+    // Most data.win files keep FONT records and glyph records inside the FONT
+    // chunk, but some localization tools relocate selected font records into
+    // another chunk and leave absolute pointers in the FONT pointer table.
+    // The general chunk parser currently bulk-loads FONT into reader->buffer,
+    // so seeking to such relocated records with the buffered reader would fail.
+    // Use a file-backed reader for the actual font/glyph records; it can follow
+    // absolute pointers both inside and outside the FONT chunk.
+    BinaryReader fontFileReader = BinaryReader_create(reader->file, reader->fileSize);
+
     repeat(count, i) {
-        BinaryReader_seek(reader, ptrs[i]);
+        if (reader->buffer != nullptr &&
+            (ptrs[i] < reader->bufferBase || ptrs[i] >= reader->bufferBase + reader->bufferSize)) {
+            fprintf(stderr,
+                    "FONT: pointer %u relocated outside FONT chunk: 0x%08X\n",
+                    i, ptrs[i]);
+        }
+
+        BinaryReader_seek(&fontFileReader, ptrs[i]);
         Font* font = &f->fonts[i];
-        font->name = readStringPtr(reader, dw);
-        font->displayName = readStringPtr(reader, dw);
-        font->emSize = BinaryReader_readUint32(reader);
-        font->bold = BinaryReader_readBool32(reader);
-        font->italic = BinaryReader_readBool32(reader);
-        font->rangeStart = BinaryReader_readUint16(reader);
-        font->charset = BinaryReader_readUint8(reader);
-        font->antiAliasing = BinaryReader_readUint8(reader);
-        font->rangeEnd = BinaryReader_readUint32(reader);
-        font->textureOffset = BinaryReader_readUint32(reader);
-        font->scaleX = BinaryReader_readFloat32(reader);
-        font->scaleY = BinaryReader_readFloat32(reader);
+        font->name = readStringPtr(&fontFileReader, dw);
+        font->displayName = readStringPtr(&fontFileReader, dw);
+        font->emSize = BinaryReader_readUint32(&fontFileReader);
+        font->bold = BinaryReader_readBool32(&fontFileReader);
+        font->italic = BinaryReader_readBool32(&fontFileReader);
+        font->rangeStart = BinaryReader_readUint16(&fontFileReader);
+        font->charset = BinaryReader_readUint8(&fontFileReader);
+        font->antiAliasing = BinaryReader_readUint8(&fontFileReader);
+        font->rangeEnd = BinaryReader_readUint32(&fontFileReader);
+        font->textureOffset = BinaryReader_readUint32(&fontFileReader);
+        font->scaleX = BinaryReader_readFloat32(&fontFileReader);
+        font->scaleY = BinaryReader_readFloat32(&fontFileReader);
         font->isSpriteFont = false;
         font->spriteIndex = -1;
 
         // Glyphs PointerList
         uint32_t glyphCount;
-        uint32_t* glyphPtrs = readPointerTable(reader, &glyphCount);
+        uint32_t* glyphPtrs = readPointerTable(&fontFileReader, &glyphCount);
         font->glyphCount = glyphCount;
 
         if (glyphCount > 0) {
             font->glyphs = safeMalloc(glyphCount * sizeof(FontGlyph));
             repeat(glyphCount, j) {
-                BinaryReader_seek(reader, glyphPtrs[j]);
+                BinaryReader_seek(&fontFileReader, glyphPtrs[j]);
                 FontGlyph* glyph = &font->glyphs[j];
-                glyph->character = BinaryReader_readUint16(reader);
-                glyph->sourceX = BinaryReader_readUint16(reader);
-                glyph->sourceY = BinaryReader_readUint16(reader);
-                glyph->sourceWidth = BinaryReader_readUint16(reader);
-                glyph->sourceHeight = BinaryReader_readUint16(reader);
-                glyph->shift = BinaryReader_readInt16(reader);
-                glyph->offset = BinaryReader_readInt16(reader);
+                glyph->character = BinaryReader_readUint16(&fontFileReader);
+                glyph->sourceX = BinaryReader_readUint16(&fontFileReader);
+                glyph->sourceY = BinaryReader_readUint16(&fontFileReader);
+                glyph->sourceWidth = BinaryReader_readUint16(&fontFileReader);
+                glyph->sourceHeight = BinaryReader_readUint16(&fontFileReader);
+                glyph->shift = BinaryReader_readInt16(&fontFileReader);
+                glyph->offset = BinaryReader_readInt16(&fontFileReader);
 
                 // Kerning SimpleListShort (uint16 count)
-                glyph->kerningCount = BinaryReader_readUint16(reader);
+                glyph->kerningCount = BinaryReader_readUint16(&fontFileReader);
                 if (glyph->kerningCount > 0) {
                     glyph->kerning = safeMalloc(glyph->kerningCount * sizeof(KerningPair));
                     for (uint16_t k = 0; glyph->kerningCount > k; k++) {
-                        glyph->kerning[k].character = BinaryReader_readInt16(reader);
-                        glyph->kerning[k].shiftModifier = BinaryReader_readInt16(reader);
+                        glyph->kerning[k].character = BinaryReader_readInt16(&fontFileReader);
+                        glyph->kerning[k].shiftModifier = BinaryReader_readInt16(&fontFileReader);
                     }
                 } else {
                     glyph->kerning = nullptr;
@@ -1262,6 +1387,33 @@ static void parseROOM(BinaryReader* reader, DataWin* dw) {
     free(ptrs);
 }
 
+static TexturePageItem readTexturePageItem(BinaryReader* reader) {
+    TexturePageItem item;
+    item.sourceX = BinaryReader_readUint16(reader);
+    item.sourceY = BinaryReader_readUint16(reader);
+    item.sourceWidth = BinaryReader_readUint16(reader);
+    item.sourceHeight = BinaryReader_readUint16(reader);
+    item.targetX = BinaryReader_readUint16(reader);
+    item.targetY = BinaryReader_readUint16(reader);
+    item.targetWidth = BinaryReader_readUint16(reader);
+    item.targetHeight = BinaryReader_readUint16(reader);
+    item.boundingWidth = BinaryReader_readUint16(reader);
+    item.boundingHeight = BinaryReader_readUint16(reader);
+    item.texturePageId = BinaryReader_readInt16(reader);
+    return item;
+}
+
+static bool texturePageItemLooksValid(const TexturePageItem* item) {
+    if (item->sourceWidth == 0 || item->sourceHeight == 0) return false;
+    if (item->targetWidth == 0 || item->targetHeight == 0) return false;
+    if (item->boundingWidth == 0 || item->boundingHeight == 0) return false;
+    if (item->sourceWidth > 8192 || item->sourceHeight > 8192) return false;
+    if (item->targetWidth > 8192 || item->targetHeight > 8192) return false;
+    if (item->boundingWidth > 8192 || item->boundingHeight > 8192) return false;
+    if (item->texturePageId < 0) return false;
+    return true;
+}
+
 static void parseTPAG(BinaryReader* reader, DataWin* dw) {
     Tpag* t = &dw->tpag;
 
@@ -1274,23 +1426,55 @@ static void parseTPAG(BinaryReader* reader, DataWin* dw) {
     t->items = safeMalloc(count * sizeof(TexturePageItem));
     repeat(count, i) {
         BinaryReader_seek(reader, ptrs[i]);
-        TexturePageItem* item = &t->items[i];
-        item->sourceX = BinaryReader_readUint16(reader);
-        item->sourceY = BinaryReader_readUint16(reader);
-        item->sourceWidth = BinaryReader_readUint16(reader);
-        item->sourceHeight = BinaryReader_readUint16(reader);
-        item->targetX = BinaryReader_readUint16(reader);
-        item->targetY = BinaryReader_readUint16(reader);
-        item->targetWidth = BinaryReader_readUint16(reader);
-        item->targetHeight = BinaryReader_readUint16(reader);
-        item->boundingWidth = BinaryReader_readUint16(reader);
-        item->boundingHeight = BinaryReader_readUint16(reader);
-        item->texturePageId = BinaryReader_readInt16(reader);
+        t->items[i] = readTexturePageItem(reader);
     }
 
     // Build tpagOffsetMap: absolute file offset -> TPAG index
     repeat(count, i) {
         hmput(dw->tpagOffsetMap, ptrs[i], (int32_t) i);
+    }
+
+    // Some localization tools append replacement font texture page items outside
+    // the TPAG chunk, then point relocated FONT records at those absolute
+    // offsets. Without adding those records to the TPAG map, text rendering
+    // resolves font->textureOffset to -1 and silently draws nothing.
+    //
+    // In the Undertale Chinese localization observed here, those external TPAG
+    // records are stored immediately before the TXTR chunk and their texture
+    // page IDs are one-based relative to the added texture pages. The original
+    // GameMaker runner tolerates this layout, but Butterscotch expects normal
+    // zero-based TXTR indices, so normalize external font TPAG texture IDs by -1.
+    BinaryReader tpagFileReader = BinaryReader_create(reader->file, reader->fileSize);
+    repeat(dw->font.count, fontIndex) {
+        uint32_t offset = dw->font.fonts[fontIndex].textureOffset;
+        if (offset == 0) continue;
+        if (hmgeti(dw->tpagOffsetMap, offset) >= 0) continue;
+        if ((size_t)offset + 22 > reader->fileSize) {
+            fprintf(stderr, "TPAG: font %u textureOffset 0x%08X is outside file; ignoring\n", fontIndex, offset);
+            continue;
+        }
+
+        BinaryReader_seek(&tpagFileReader, offset);
+        TexturePageItem item = readTexturePageItem(&tpagFileReader);
+        if (!texturePageItemLooksValid(&item)) {
+            fprintf(stderr, "TPAG: font %u textureOffset 0x%08X does not look like a TPAG item; ignoring\n", fontIndex, offset);
+            continue;
+        }
+
+        int16_t originalTexturePageId = item.texturePageId;
+        if (item.texturePageId > 0) {
+            item.texturePageId -= 1;
+        }
+
+        uint32_t newIndex = t->count;
+        t->items = safeRealloc(t->items, ((size_t)t->count + 1) * sizeof(TexturePageItem));
+        t->items[newIndex] = item;
+        t->count++;
+        hmput(dw->tpagOffsetMap, offset, (int32_t)newIndex);
+
+        fprintf(stderr,
+                "TPAG: added relocated font texture item for font %u at 0x%08X -> index %u, texturePageId %d -> %d\n",
+                fontIndex, offset, newIndex, originalTexturePageId, item.texturePageId);
     }
 
     free(ptrs);
@@ -1428,7 +1612,7 @@ static void parseSTRG(BinaryReader* reader, DataWin* dw) {
     repeat(count, i) {
         // Pointer table points to the string's length prefix.
         // The actual string content starts 4 bytes after.
-        s->strings[i] = (const char*)(dw->strgBuffer + (ptrs[i] + 4 - dw->strgBufferBase));
+        s->strings[i] = resolveStringOffset(dw, ptrs[i] + 4);
     }
     free(ptrs);
 }
@@ -1561,7 +1745,9 @@ DataWin* DataWin_parse(const char* filePath, DataWinParserOptions options) {
 
             if (memcmp(chunkName, "STRG", 4) == 0) {
                 dw->strgBufferBase = chunkDataStart;
+                dw->strgBufferSize = chunkLength;
                 dw->strgBuffer = BinaryReader_readBytesAt(&reader, chunkDataStart, chunkLength);
+                loadExternalStringPoolIfNeeded(&reader, dw, (size_t) fileSize);
             }
 
             BinaryReader_seek(&reader, chunkDataStart + chunkLength);
@@ -1899,6 +2085,7 @@ void DataWin_free(DataWin* dw) {
 
     // Owned buffers
     free(dw->strgBuffer);
+    free(dw->externalStringBuffer);
     free(dw->bytecodeBuffer);
     free(dw);
 }

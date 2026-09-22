@@ -696,7 +696,7 @@ typedef struct {
 // ===[ STRG - Strings ]===
 typedef struct {
     uint32_t count;
-    const char** strings; // pointers into strgBuffer
+    const char** strings; // pointers into STRG buffer or external string buffer
 } Strg;
 
 // ===[ TXTR - Embedded Textures ]===
@@ -730,6 +730,14 @@ typedef struct DataWin {
     uint8_t* strgBuffer;        // owned copy of STRG chunk raw data
     // Absolute file offset of strgBuffer[0], we need this because data.win stores absolute offsets (from the beginning of the data.win file) instead of relative offsets
     size_t strgBufferBase;
+    size_t strgBufferSize;
+
+    // Some patched/localized data.win files keep additional length-prefixed strings
+    // outside the STRG chunk and point STRG entries at those absolute offsets.
+    // Keep a compact copy of that external string pool so those offsets remain valid.
+    uint8_t* externalStringBuffer;
+    size_t externalStringBufferBase;
+    size_t externalStringBufferSize;
 
     uint8_t* bytecodeBuffer;     // owned copy of CODE bytecode blob
     // Absolute file offset of bytecodeBuffer[0], we need this because data.win stores absolute offsets (from the beginning of the data.win file) instead of relative offsets
